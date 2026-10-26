@@ -96,7 +96,7 @@ async def m365_search_emails(query: str) -> str:
 @mcp.tool()
 async def m365_send_email(to: str, subject: str, body: str) -> str:
     """Envía un correo electrónico desde la cuenta institucional de Outlook.
-    to: Dirección de correo del destinatario (ej. alumno@inacapmail.cl o colega@empresa.com)
+    to: Dirección de correo del destinatario (ej. alumno@inacapmail.cl o correo@gmail.com)
     subject: Asunto del correo
     body: Contenido del mensaje de texto
     """
@@ -106,36 +106,35 @@ async def m365_send_email(to: str, subject: str, body: str) -> str:
         try:
             page = await context.new_page()
             await page.goto("https://outlook.cloud.microsoft/mail/", wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(3000)
 
-            # Clic en botón "Nuevo correo"
-            new_mail_btn = await page.wait_for_selector(
-                'button[aria-label*="Correo nuevo"], button[aria-label*="New mail"], button[title*="Correo nuevo"], button:has-text("Nuevo")',
-                timeout=15000
-            )
-            await new_mail_btn.click()
-            await page.wait_for_timeout(2000)
+            new_btn = page.locator("button:has-text(\"Nuevo\")").first
+            await new_btn.click()
+            await page.wait_for_timeout(2500)
 
-            # Campo Para (To)
-            to_input = await page.wait_for_selector('div[aria-label*="Para"], input[aria-label*="Para"], div[aria-label*="To"]', timeout=10000)
-            await to_input.fill(to)
-            await page.keyboard.press("Enter")
+            # Escribir destinatario y validar con Enter
+            to_input = page.locator("div[aria-label=\"Para\"] input, div[aria-label=\"Para\"]").first
+            await to_input.click()
+            await page.keyboard.type(to)
             await page.wait_for_timeout(500)
+            await page.keyboard.press("Enter")
+            await page.keyboard.press("Tab")
+            await page.wait_for_timeout(1000)
 
-            # Campo Asunto (Subject)
-            subject_input = await page.wait_for_selector('input[aria-label*="Asunto"], input[placeholder*="Asunto"], input[aria-label*="Subject"]', timeout=10000)
+            # Asunto
+            subject_input = page.locator("input[aria-label=\"Asunto\"], input[placeholder*=\"asunto\"]").first
             await subject_input.fill(subject)
             await page.wait_for_timeout(500)
 
-            # Campo Cuerpo del mensaje
-            body_input = await page.wait_for_selector('div[aria-label*="Cuerpo del mensaje"], div[role="textbox"]', timeout=10000)
-            await body_input.fill(body)
-            await page.wait_for_timeout(1000)
+            # Cuerpo
+            body_input = page.locator("div[aria-label=\"Cuerpo del mensaje\"], div[role=\"textbox\"]").first
+            await body_input.click()
+            await page.keyboard.type(body)
+            await page.wait_for_timeout(1500)
 
-            # Botón Enviar (Send)
-            send_btn = await page.wait_for_selector('button[aria-label*="Enviar"], button[title*="Enviar"], button:has-text("Enviar")', timeout=10000)
-            await send_btn.click()
-            await page.wait_for_timeout(3000)
+            # Enviar mediante Ctrl+Enter (atajo nativo de Outlook)
+            await page.keyboard.press("Control+Enter")
+            await page.wait_for_timeout(4000)
 
             return f"✓ Correo enviado exitosamente a: {to} | Asunto: {subject}"
         except Exception as e:
