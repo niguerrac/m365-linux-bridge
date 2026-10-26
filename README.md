@@ -7,63 +7,60 @@ Una solución integral de código abierto para utilizar la suite de **Microsoft 
 ## 🌟 Características Principales
 
 * **Bypass Nativo de Azure AD:** No requiere permisos de administrador de la institución ni registro previo de aplicaciones OAuth de terceros.
-* **Barra de Herramientas y Panel GUI:** Interfaz gráfica nativa en PyQt6 para abrir Outlook, OneDrive, sincronizar y configurar opciones en un clic.
-* **Sincronización Local de OneDrive:** Descarga continua y automática de carpetas institucionales a tu disco local (`~/M365-Drive` o ruta personalizada).
-* **Servidor MCP Universal (Model Context Protocol):** Compatible con Google Antigravity (AGY), Claude Desktop, Cursor y OpenCode para que asistentes de IA puedan leer, resumir correos y buscar archivos institucionales.
-* **Icono de Bandeja del Sistema (Tray):** Soporte nativo para Wayland y X11 (KDE Plasma, GNOME, XFCE).
+* **Interfaz Integrada (PyQt6-WebEngine):** Outlook y OneDrive corren embebidos en una sola ventana nativa y moderna de escritorio.
+* **Sincronización Local de OneDrive en Tiempo Real:** Descarga continua y automática de carpetas institucionales a tu disco local (`~/OneDrive`), con indicador de archivo actual y barra de progreso.
+* **Servidor MCP Completo para IA (Lectura y Envío):**
+  * `m365_list_emails`: Lista correos recientes con remitente, asunto y fragmento.
+  * `m365_search_emails`: Búsqueda de correos por palabras clave, personas o fechas.
+  * `m365_send_email`: Redacción y despacho directo de correos desde la cuenta institucional.
+  * `m365_list_files`: Explorador de archivos y carpetas de OneDrive.
+* **Instalador de MCP en 1 Clic:** Botón directo en la barra de herramientas para registrar el servidor en **Claude Desktop**, **Google Antigravity (AGY)** y **OpenCode**.
+* **Icono de Bandeja del Sistema (Tray):** Soporte oficial para KDE Plasma (Wayland) y X11 con acciones rápidas de sincronización.
 
 ---
 
-## 🚀 Instalación Rápida (1 línea)
+## 📋 Resumen de Trabajo y Estado de la Sesión
 
+### Lo que dejamos listo y operativo:
+1. **Autenticación e inicio de sesión persistente:** Vinculado con la cuenta `nilson.guerra@inacapmail.cl` sin requerir reautenticación en cada reinicio.
+2. **Descarga masiva de OneDrive:** Sincronizados más de 4.8 GB de documentos, informes y proyectos en `~/OneDrive`.
+3. **Barra de herramientas compacta y moderna:** Corregida la alineación visual, dejando el 100% del área de trabajo para la vista web de Microsoft 365.
+4. **Envío de correos por IA validado:** Probado con éxito mediante el envío del correo de prueba a `s4wolf64@gmail.com`.
+5. **Instalación y accesos en el sistema:** Lanza con `M365 Linux Bridge` desde el menú de aplicaciones de KDE o desde la terminal.
+
+---
+
+## 🚀 Pasos para Retomar el Proyecto o Replicarlo en Otro PC
+
+### 1. Iniciar la aplicación en este equipo:
+* Desde el menú de aplicaciones: Busca **"M365 Linux Bridge"**.
+* O desde terminal:
+  ```bash
+  cd ~/m365-linux-bridge
+  .venv/bin/python m365_bridge/gui.py
+  ```
+
+### 2. Para replicarlo en un equipo nuevo:
 ```bash
-git clone https://github.com/tu-usuario/m365-linux-bridge.git
+git clone https://github.com/TU_USUARIO/m365-linux-bridge.git
 cd m365-linux-bridge
 ./install.sh
 ```
 
----
-
-## ⚙️ Configuración
-
-Puedes acceder a la configuración desde la ventana principal (**"Configuración"**) o editando directamente `~/.config/m365-bridge/config.json`:
-
-```json
-{
-  "institution_name": "Mi Universidad / Empresa",
-  "sync_folder": "/home/usuario/M365-Drive",
-  "max_file_size_mb": 200,
-  "excluded_folders": ["Recordings", "Meetings"]
-}
+### 3. Para publicarlo en GitHub:
+```bash
+cd ~/m365-linux-bridge
+git remote add origin https://github.com/TU_USUARIO/m365-linux-bridge.git
+git branch -M main
+git push -u origin main
 ```
 
 ---
 
-## 🤖 Integración con Asistentes de IA (MCP)
-
-### Claude Desktop (`~/.config/Claude/claude_desktop_config.json`)
-```json
-{
-  "mcpServers": {
-    "m365": {
-      "command": "/ruta/a/m365-linux-bridge/.venv/bin/python",
-      "args": ["/ruta/a/m365-linux-bridge/m365_bridge/mcp_server.py"]
-    }
-  }
-}
-```
-
-### Antigravity (AGY) (`~/.gemini/config/mcp_config.json`)
-```json
-{
-  "mcpServers": {
-    "m365": {
-      "command": "/ruta/a/m365-linux-bridge/.venv/bin/python",
-      "args": ["/ruta/a/m365-linux-bridge/m365_bridge/mcp_server.py"]
-    }
-  }
-}
-```
+## 🛣️ Próximos Pasos Sugeridos (Backlog Futuro)
+* [ ] Agregar subida bidireccional de archivos locales hacia OneDrive (actualmente es unidireccional de la nube al disco).
+* [ ] Empaquetar como paquete AUR (`m365-linux-bridge-bin`) y/o Flatpak.
+* [ ] Soporte para calendario y reuniones de Teams vía MCP.
 
 ---
 
