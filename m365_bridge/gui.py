@@ -1,7 +1,6 @@
-import sys, os; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-import sys
-import os
-import subprocess
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -9,8 +8,11 @@ from PyQt6.QtWidgets import (
     QMessageBox, QDialog, QFormLayout
 )
 from PyQt6.QtGui import QIcon
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from m365_bridge.config import get_config, save_config, BROWSER_PROFILE_DIR, DATA_DIR
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage
+
+from m365_bridge.config import get_config, save_config, DATA_DIR
 from m365_bridge.sync import run_sync
 
 ICON_PATH = Path(__file__).parent.parent / "icons" / "m365.png"
@@ -39,7 +41,6 @@ class SettingsDialog(QDialog):
         self.inst_input = QLineEdit(self.cfg.get("institution_name", ""))
         layout.addRow("Nombre de Institución:", self.inst_input)
 
-        # Carpeta local
         folder_layout = QHBoxLayout()
         self.folder_input = QLineEdit(self.cfg.get("sync_folder", ""))
         self.btn_browse = QPushButton("Examinar...")
@@ -48,14 +49,12 @@ class SettingsDialog(QDialog):
         folder_layout.addWidget(self.btn_browse)
         layout.addRow("Carpeta Local OneDrive:", folder_layout)
 
-        # Límite de tamaño
         self.max_mb_input = QSpinBox()
         self.max_mb_input.setRange(10, 50000)
         self.max_mb_input.setValue(self.cfg.get("max_file_size_mb", 200))
         self.max_mb_input.setSuffix(" MB")
         layout.addRow("Límite tamaño descarga:", self.max_mb_input)
 
-        # Botones
         btns = QHBoxLayout()
         btn_save = QPushButton("Guardar")
         btn_save.clicked.connect(self.save)
@@ -82,31 +81,51 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.cfg = get_config()
         self.setWindowTitle(f"M365 Linux Bridge - {self.cfg.get('institution_name', 'Office 365')}")
-        self.resize(1100, 750)
+        self.resize(1200, 800)
         if ICON_PATH.exists():
             self.setWindowIcon(QIcon(str(ICON_PATH)))
+
+        # Perfil persistente embebido para que la sesión de Outlook/OneDrive quede guardada dentro de la app
+        profile_storage = DATA_DIR / "webengine_profile"
+        profile_storage.mkdir(parents=True, exist_ok=True)
+        self.web_profile = QWebEngineProfile("M365Profile", self)
+        self.web_profile.setPersistentStoragePath(str(profile_storage))
+        self.web_profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
 
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(4, 4, 4, 4)
 
-        # --- BARRA DE HERRAMIENTAS SUPERIOR ---
+        # --- BARRA DE HERRAMIENTAS INTEGRADA ---
         toolbar = QHBoxLayout()
         
-        self.btn_outlook = QPushButton(" Abrir Outlook")
-        self.btn_outlook.setStyleSheet("font-weight: bold; padding: 8px 14px;")
-        self.btn_outlook.clicked.connect(self.launch_outlook)
+        self.btn_outlook = QPushButton(" Outlook (Correo)")
+        self.btn_outlook.setStyleSheet("font-weight: bold; padding: 6px 12px;")
+        self.btn_outlook.clicked.connect(self.show_outlook)
         toolbar.addWidget(self.btn_outlook)
 
-        self.btn_onedrive = QPushButton(" Abrir OneDrive Web")
-        self.btn_onedrive.setStyleSheet("font-weight: bold; padding: 8px 14px;")
-        self.btn_onedrive.clicked.connect(self.launch_onedrive)
+        self.btn_onedrive = QPushButton(" OneDrive (Archivos)")
+        self.btn_onedrive.setStyleSheet("font-weight: bold; padding: 6px 12px;")
+        self.btn_onedrive.clicked.connect(self.show_onedrive)
         toolbar.addWidget(self.btn_onedrive)
 
-        toolbar.addSpacing(20)
+        toolbar.addSpacing(15)
+
+        self.btn_back = QPushButton("◀")
+        self.btn_back.setToolTip("Atrás")
+        self.btn_back.clicked.connect(self.go_back)
+        toolbar.addWidget(self.btn_back)
+
+        self.btn_reload = QPushButton("⟳")
+        self.btn_reload.setToolTip("Recargar")
+        self.btn_reload.clicked.connect(self.reload_page)
+        toolbar.addWidget(self.btn_reload)
+
+        toolbar.addSpacing(15)
 
         self.btn_sync = QPushButton(" Sincronizar Ahora")
-        self.btn_sync.setStyleSheet("background-color: #0078D4; color: white; font-weight: bold; padding: 8px 14px; border-radius: 4px;")
+        self.btn_sync.setStyleSheet("background-color: #0078D4; color: white; font-weight: bold; padding: 6px 12px; border-radius: 4px;")
         self.btn_sync.clicked.connect(self.start_sync)
         toolbar.addWidget(self.btn_sync)
 
@@ -116,63 +135,45 @@ class MainWindow(QMainWindow):
 
         toolbar.addStretch()
 
+        self.sync_status = QLabel("Listo.")
+        self.sync_status.setStyleSheet("color: #666; margin-right: 10px;")
+        toolbar.addWidget(self.sync_status)
+
         self.btn_settings = QPushButton("⚙ Configuración")
         self.btn_settings.clicked.connect(self.open_settings)
         toolbar.addWidget(self.btn_settings)
 
         main_layout.addLayout(toolbar)
 
-        # --- PANEL CENTRAL DE INFORMACIÓN Y ESTADO ---
-        self.info_panel = QWidget()
-        info_layout = QVBoxLayout(self.info_panel)
-        info_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # --- NAVEGADOR EMBEBIDO (WEBVIEW INTEGRADO) ---
+        self.webview = QWebEngineView(self)
+        self.web_page = QWebEnginePage(self.web_profile, self.webview)
+        self.webview.setPage(self.web_page)
+        
+        main_layout.addWidget(self.webview)
 
-        self.status_title = QLabel("M365 Linux Bridge está Activo")
-        self.status_title.setStyleSheet("font-size: 20px; font-weight: bold; color: #0078D4;")
-        info_layout.addWidget(self.status_title, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        self.status_desc = QLabel(
-            "Tu sesión institucional se encuentra vinculada.\n"
-            "Tanto el servicio de IA (MCP) como la sincronización local de archivos están habilitados."
-        )
-        self.status_desc.setStyleSheet("font-size: 13px; color: #555; margin-top: 10px; line-height: 1.4;")
-        self.status_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        info_layout.addWidget(self.status_desc)
-
-        self.sync_status = QLabel("Listo para sincronizar.")
-        self.sync_status.setStyleSheet("margin-top: 20px; font-weight: bold;")
-        info_layout.addWidget(self.sync_status, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        main_layout.addWidget(self.info_panel)
+        # Cargar Outlook por defecto adentro de la app
+        self.show_outlook()
 
         self.worker = None
 
-    def launch_outlook(self):
-        self.launch_browser_app("https://outlook.cloud.microsoft/mail/")
+    def show_outlook(self):
+        url = self.cfg.get("outlook_url", "https://outlook.cloud.microsoft/mail/")
+        self.webview.setUrl(QUrl(url))
 
-    def launch_onedrive(self):
-        self.launch_browser_app("https://outlook.cloud.microsoft/host/377c982d-9686-450e-9a7c-22aeaf1bc162/7211f19f-262a-42eb-a02e-289956491741")
+    def show_onedrive(self):
+        url = self.cfg.get("onedrive_url", "https://www.office.com/launch/onedrive")
+        self.webview.setUrl(QUrl(url))
 
-    def launch_browser_app(self, url):
-        port = self.cfg.get("remote_debugging_port", 9222)
-        subprocess.run(["pkill", "-f", "m365-bridge.*browser_profile"])
-        for lock in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
-            p = BROWSER_PROFILE_DIR / lock
-            if p.exists() or p.is_symlink():
-                try: p.unlink()
-                except Exception: pass
+    def go_back(self):
+        self.webview.back()
 
-        subprocess.Popen([
-            "/usr/bin/chromium",
-            f"--user-data-dir={BROWSER_PROFILE_DIR}",
-            f"--remote-debugging-port={port}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            f"--app={url}"
-        ])
+    def reload_page(self):
+        self.webview.reload()
 
     def open_local_folder(self):
-        path = self.cfg.get("sync_folder", str(Path.home() / "M365-Drive"))
+        import subprocess
+        path = self.cfg.get("sync_folder", str(Path.home() / "OneDrive"))
         subprocess.Popen(["xdg-open", path])
 
     def open_settings(self):
@@ -183,7 +184,7 @@ class MainWindow(QMainWindow):
 
     def start_sync(self):
         self.btn_sync.setEnabled(False)
-        self.sync_status.setText("Sincronizando archivos con OneDrive...")
+        self.sync_status.setText("Sincronizando...")
         self.worker = SyncWorker()
         self.worker.finished.connect(self.on_sync_finished)
         self.worker.error.connect(self.on_sync_error)
@@ -191,13 +192,13 @@ class MainWindow(QMainWindow):
 
     def on_sync_finished(self, count):
         self.btn_sync.setEnabled(True)
-        self.sync_status.setText(f"Sincronización finalizada. Archivos actualizados: {count}")
+        self.sync_status.setText(f"Sincronizados: {count}")
         QMessageBox.information(self, "Sincronización M365", f"¡Sincronización completada!\nArchivos actualizados: {count}")
 
     def on_sync_error(self, err):
         self.btn_sync.setEnabled(True)
-        self.sync_status.setText("Error en la sincronización.")
-        QMessageBox.warning(self, "Detalle de sincronización", f"Ocurrió un error al sincronizar:\n{err}")
+        self.sync_status.setText("Error al sincronizar.")
+        QMessageBox.warning(self, "Detalle", f"Error:\n{err}")
 
 def main():
     app = QApplication(sys.argv)
