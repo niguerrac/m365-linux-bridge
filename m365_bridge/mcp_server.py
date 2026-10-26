@@ -1,4 +1,3 @@
-import sys, os; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import asyncio
 import json
 from pathlib import Path
@@ -88,6 +87,59 @@ async def m365_search_emails(query: str) -> str:
             for i, email in enumerate(emails, 1):
                 output.append(f"{i}. De: {email['sender']}\n   Asunto: {email['subject']}\n   Vista previa: {email['preview']}\n")
             return "\n".join(output)
+        finally:
+            if page:
+                await page.close()
+            if should_close:
+                await context.close()
+
+@mcp.tool()
+async def m365_send_email(to: str, subject: str, body: str) -> str:
+    """Envía un correo electrónico desde la cuenta institucional de Outlook.
+    to: Dirección de correo del destinatario (ej. alumno@inacapmail.cl o colega@empresa.com)
+    subject: Asunto del correo
+    body: Contenido del mensaje de texto
+    """
+    async with async_playwright() as p:
+        context, should_close = await get_browser_context(p)
+        page = None
+        try:
+            page = await context.new_page()
+            await page.goto("https://outlook.cloud.microsoft/mail/", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(2000)
+
+            # Clic en botón "Nuevo correo"
+            new_mail_btn = await page.wait_for_selector(
+                'button[aria-label*="Correo nuevo"], button[aria-label*="New mail"], button[title*="Correo nuevo"], button:has-text("Nuevo")',
+                timeout=15000
+            )
+            await new_mail_btn.click()
+            await page.wait_for_timeout(2000)
+
+            # Campo Para (To)
+            to_input = await page.wait_for_selector('div[aria-label*="Para"], input[aria-label*="Para"], div[aria-label*="To"]', timeout=10000)
+            await to_input.fill(to)
+            await page.keyboard.press("Enter")
+            await page.wait_for_timeout(500)
+
+            # Campo Asunto (Subject)
+            subject_input = await page.wait_for_selector('input[aria-label*="Asunto"], input[placeholder*="Asunto"], input[aria-label*="Subject"]', timeout=10000)
+            await subject_input.fill(subject)
+            await page.wait_for_timeout(500)
+
+            # Campo Cuerpo del mensaje
+            body_input = await page.wait_for_selector('div[aria-label*="Cuerpo del mensaje"], div[role="textbox"]', timeout=10000)
+            await body_input.fill(body)
+            await page.wait_for_timeout(1000)
+
+            # Botón Enviar (Send)
+            send_btn = await page.wait_for_selector('button[aria-label*="Enviar"], button[title*="Enviar"], button:has-text("Enviar")', timeout=10000)
+            await send_btn.click()
+            await page.wait_for_timeout(3000)
+
+            return f"✓ Correo enviado exitosamente a: {to} | Asunto: {subject}"
+        except Exception as e:
+            return f"Error al enviar correo: {str(e)}"
         finally:
             if page:
                 await page.close()

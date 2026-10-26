@@ -5,7 +5,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QSpinBox, QFileDialog,
-    QMessageBox, QDialog, QFormLayout, QProgressBar, QTextEdit
+    QMessageBox, QDialog, QFormLayout, QProgressBar, QTextEdit, QSizePolicy
 )
 from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
@@ -38,7 +38,7 @@ class McpDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Configuración de MCP para IA (Claude / AGY / OpenCode)")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(580)
         
         layout = QVBoxLayout(self)
 
@@ -47,12 +47,13 @@ class McpDialog(QDialog):
         layout.addWidget(title)
 
         desc = QLabel(
-            "Permite a modelos de IA leer tus correos de Outlook y buscar archivos en OneDrive "
-            "sin requerir permisos del administrador de Azure AD.\n\n"
-            "Herramientas incluidas:\n"
+            "Permite a modelos de IA leer, buscar correos, ENVIAR correos y listar archivos en OneDrive "
+            "sin requerir permisos de administrador de Azure AD.\n\n"
+            "Herramientas disponibles para la IA:\n"
             "• m365_list_emails: Obtiene los últimos correos recibidos.\n"
-            "• m365_search_emails: Busca correos por palabra clave o remitente.\n"
-            "• m365_list_files: Lista documentos y archivos en OneDrive."
+            "• m365_search_emails: Busca correos por tema o remitente.\n"
+            "• m365_send_email: Redacta y envía correos (to, subject, body).\n"
+            "• m365_list_files: Lista documentos y carpetas en OneDrive."
         )
         desc.setStyleSheet("color: #444; line-height: 1.4;")
         layout.addWidget(desc)
@@ -189,82 +190,87 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # --- BARRA DE HERRAMIENTAS PRINCIPAL ---
-        toolbar = QHBoxLayout()
+        # --- BARRA DE HERRAMIENTAS COMPACTA ---
+        toolbar_container = QWidget()
+        toolbar_container.setStyleSheet("background-color: #f3f3f3; border-bottom: 1px solid #ddd;")
+        toolbar = QHBoxLayout(toolbar_container)
+        toolbar.setContentsMargins(8, 6, 8, 6)
+        toolbar.setSpacing(6)
         
         self.btn_outlook = QPushButton(" Outlook (Correo)")
-        self.btn_outlook.setStyleSheet("font-weight: bold; padding: 6px 12px;")
+        self.btn_outlook.setStyleSheet("font-weight: bold; padding: 5px 10px;")
         self.btn_outlook.clicked.connect(self.show_outlook)
         toolbar.addWidget(self.btn_outlook)
 
         self.btn_onedrive = QPushButton(" OneDrive (Archivos)")
-        self.btn_onedrive.setStyleSheet("font-weight: bold; padding: 6px 12px;")
+        self.btn_onedrive.setStyleSheet("font-weight: bold; padding: 5px 10px;")
         self.btn_onedrive.clicked.connect(self.show_onedrive)
         toolbar.addWidget(self.btn_onedrive)
 
-        toolbar.addSpacing(10)
+        toolbar.addSpacing(6)
 
         self.btn_back = QPushButton("◀")
         self.btn_back.setToolTip("Atrás")
+        self.btn_back.setFixedWidth(30)
         self.btn_back.clicked.connect(self.go_back)
         toolbar.addWidget(self.btn_back)
 
         self.btn_reload = QPushButton("⟳")
         self.btn_reload.setToolTip("Recargar")
+        self.btn_reload.setFixedWidth(30)
         self.btn_reload.clicked.connect(self.reload_page)
         toolbar.addWidget(self.btn_reload)
 
         toolbar.addSpacing(10)
 
         self.btn_sync = QPushButton(" Sincronizar Drive")
-        self.btn_sync.setStyleSheet("background-color: #0078D4; color: white; font-weight: bold; padding: 6px 12px; border-radius: 4px;")
+        self.btn_sync.setStyleSheet("background-color: #0078D4; color: white; font-weight: bold; padding: 5px 12px; border-radius: 4px;")
         self.btn_sync.clicked.connect(self.start_sync)
         toolbar.addWidget(self.btn_sync)
 
         self.btn_folder = QPushButton(" Abrir Carpeta")
+        self.btn_folder.setStyleSheet("padding: 5px 10px;")
         self.btn_folder.clicked.connect(self.open_local_folder)
         toolbar.addWidget(self.btn_folder)
 
-        toolbar.addSpacing(10)
+        toolbar.addSpacing(6)
 
         self.btn_mcp = QPushButton("🤖 MCP / IA")
-        self.btn_mcp.setStyleSheet("background-color: #107C41; color: white; font-weight: bold; padding: 6px 12px; border-radius: 4px;")
+        self.btn_mcp.setStyleSheet("background-color: #107C41; color: white; font-weight: bold; padding: 5px 12px; border-radius: 4px;")
         self.btn_mcp.clicked.connect(self.open_mcp_dialog)
         toolbar.addWidget(self.btn_mcp)
 
         toolbar.addStretch()
 
-        self.btn_settings = QPushButton("⚙ Configuración")
+        # Indicador de estado compacto dentro de la misma barra superior (no empuja hacia abajo)
+        self.sync_status_label = QLabel("")
+        self.sync_status_label.setStyleSheet("color: #0078D4; font-size: 11px; font-weight: bold; margin-right: 6px;")
+        toolbar.addWidget(self.sync_status_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedWidth(100)
+        self.progress_bar.setFixedHeight(8)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setVisible(False)
+        toolbar.addWidget(self.progress_bar)
+
+        self.btn_settings = QPushButton("⚙")
+        self.btn_settings.setToolTip("Configuración")
+        self.btn_settings.setFixedWidth(32)
         self.btn_settings.clicked.connect(self.open_settings)
         toolbar.addWidget(self.btn_settings)
 
-        main_layout.addLayout(toolbar)
+        main_layout.addWidget(toolbar_container)
 
-        # --- BARRA DE PROGRESO DE DESCARGA / SINCRONIZACIÓN ---
-        self.sync_bar_container = QWidget()
-        sync_layout = QHBoxLayout(self.sync_bar_container)
-        sync_layout.setContentsMargins(8, 2, 8, 2)
-
-        self.sync_status_label = QLabel("Listo.")
-        self.sync_status_label.setStyleSheet("color: #444; font-size: 12px;")
-        sync_layout.addWidget(self.sync_status_label)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedHeight(12)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setRange(0, 0) # Indeterminado por defecto
-        self.progress_bar.setVisible(False)
-        sync_layout.addWidget(self.progress_bar)
-
-        main_layout.addWidget(self.sync_bar_container)
-
-        # --- NAVEGADOR EMBEBIDO (WEBVIEW) ---
+        # --- NAVEGADOR EMBEBIDO (WEBVIEW) OCUPA TODO EL ESPACIO RESTANTE ---
         self.webview = QWebEngineView(self)
         self.web_page = QWebEnginePage(self.web_profile, self.webview)
         self.webview.setPage(self.web_page)
-        main_layout.addWidget(self.webview)
+        self.webview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        main_layout.addWidget(self.webview, 1)
 
         self.show_outlook()
         self.worker = None
@@ -301,8 +307,8 @@ class MainWindow(QMainWindow):
     def start_sync(self):
         self.btn_sync.setEnabled(False)
         self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0) # Animación de carga activa
-        self.sync_status_label.setText("Iniciando sincronización con OneDrive...")
+        self.progress_bar.setRange(0, 0)
+        self.sync_status_label.setText("Conectando...")
 
         self.worker = SyncWorker()
         self.worker.progress.connect(self.on_sync_progress)
@@ -311,18 +317,18 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def on_sync_progress(self, msg, count):
-        self.sync_status_label.setText(f"Sincronizando: {msg} (Descargados: {max(count, 0)})")
+        self.sync_status_label.setText(f"{msg[:30]} ({max(count, 0)})")
 
     def on_sync_finished(self, count):
         self.btn_sync.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.sync_status_label.setText(f"✓ Sincronización completada. Total archivos actualizados: {count}")
+        self.sync_status_label.setText(f"✓ Sincronizado ({count})")
         QMessageBox.information(self, "Sincronización M365", f"¡Sincronización completada!\nArchivos actualizados: {count}")
 
     def on_sync_error(self, err):
         self.btn_sync.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.sync_status_label.setText("⚠ Error durante la sincronización.")
+        self.sync_status_label.setText("⚠ Error")
         QMessageBox.warning(self, "Detalle", f"Error:\n{err}")
 
 def main():
