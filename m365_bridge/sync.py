@@ -2,16 +2,25 @@ import asyncio
 import os
 import httpx
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 from playwright.async_api import async_playwright
 from m365_bridge.config import get_config
 from m365_bridge.browser import get_browser_context
 
-async def sync_folder(sp_frame, folder_rel_path: str, local_dir: Path, cfg: Dict[str, Any]) -> int:
+async def sync_folder(
+    sp_frame,
+    folder_rel_path: str,
+    local_dir: Path,
+    cfg: Dict[str, Any],
+    progress_callback: Optional[Callable[[str, int], None]] = None
+) -> int:
     local_dir.mkdir(parents=True, exist_ok=True)
     endpoint = "https://inacapmailcl-my.sharepoint.com/personal/nilson_guerra_inacapmail_cl/_api/v2.0/me/drive/root/children"
     if folder_rel_path:
         endpoint = f"https://inacapmailcl-my.sharepoint.com/personal/nilson_guerra_inacapmail_cl/_api/v2.0/me/drive/root:/{folder_rel_path}:/children"
+
+    if progress_callback:
+        progress_callback(f"Explorando {folder_rel_path or 'raíz'}...", -1)
 
     items = await sp_frame.evaluate("""async (url) => {
         try {
@@ -45,24 +54,31 @@ async def sync_folder(sp_frame, folder_rel_path: str, local_dir: Path, cfg: Dict
                 if name in excluded:
                     continue
                 sub_rel = f"{folder_rel_path}/{name}".strip("/")
-                downloaded += await sync_folder(sp_frame, sub_rel, target_path, cfg)
+                downloaded += await sync_folder(sp_frame, sub_rel, target_path, cfg, progress_callback)
             else:
                 if not download_url or size > max_mb:
                     continue
                 if not target_path.exists() or target_path.stat().st_size != size:
+                    if progress_callback:
+                        progress_callback(f"Descargando: {name}", downloaded)
                     try:
                         resp = await client.get(download_url, follow_redirects=True)
                         if resp.status_code == 200:
                             target_path.write_bytes(resp.content)
                             downloaded += 1
+                            if progress_callback:
+                                progress_callback(f"Guardado: {name}", downloaded)
                     except Exception:
                         pass
     return downloaded
 
-async def run_sync() -> int:
+async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = None) -> int:
     cfg = get_config()
     local_drive = Path(cfg["sync_folder"])
     
+    if progress_callback:
+        progress_callback("Conectando con OneDrive...", 0)
+
     async with async_playwright() as p:
         context, should_close = await get_browser_context(p)
         try:
@@ -71,6 +87,8 @@ async def run_sync() -> int:
             await page.wait_for_timeout(2000)
             btn = await page.wait_for_selector("button[aria-label=\"OneDrive\"]", timeout=10000)
             if not btn:
+                if progress_callback:
+                    progress_callback("No se halló el botón de OneDrive", 0)
                 return 0
             await btn.click()
             await page.wait_for_timeout(7000)
@@ -82,9 +100,11 @@ async def run_sync() -> int:
                     break
             
             if not sp_frame:
+                if progress_callback:
+                    progress_callback("No se halló el frame de SharePoint", 0)
                 return 0
 
-            return await sync_folder(sp_frame, "", local_drive, cfg)
+            return await sync_folder(sp_frame, "", local_drive, cfg, progress_callback)
         finally:
             if should_close:
                 await context.close()
