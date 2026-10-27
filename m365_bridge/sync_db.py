@@ -21,7 +21,30 @@ def get_db():
                 last_synced_at REAL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
     return conn
+
+def get_kv(key: str) -> Optional[str]:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM kv_store WHERE key = ?", (key,))
+    row = cur.fetchone()
+    conn.close()
+    return row["value"] if row else None
+
+def set_kv(key: str, value: str):
+    conn = get_db()
+    with conn:
+        conn.execute("""
+            INSERT INTO kv_store (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """, (key, value))
+    conn.close()
 
 def get_file_state(rel_path: str) -> Optional[Dict[str, Any]]:
     conn = get_db()
