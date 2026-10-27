@@ -1,10 +1,11 @@
+import sys, os; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import asyncio
 import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
 from playwright.async_api import async_playwright
-from m365_bridge.browser import get_browser_context
+from m365_bridge.browser import get_browser_context, navigate_and_handle_prompts
 from m365_bridge.config import get_config
 
 mcp = FastMCP("m365_linux_bridge")
@@ -17,7 +18,7 @@ async def m365_list_emails(count: int = 10) -> str:
         page = None
         try:
             page = await context.new_page()
-            await page.goto("https://outlook.cloud.microsoft/mail/", wait_until="domcontentloaded", timeout=30000)
+            await navigate_and_handle_prompts(page, "https://outlook.cloud.microsoft/mail/", timeout=35000)
             await page.wait_for_selector('div[role="listbox"], div[role="option"], div[data-convid]', timeout=25000)
             await page.wait_for_timeout(2000)
 
@@ -58,7 +59,7 @@ async def m365_search_emails(query: str) -> str:
         page = None
         try:
             page = await context.new_page()
-            await page.goto("https://outlook.cloud.microsoft/mail/", wait_until="domcontentloaded", timeout=30000)
+            await navigate_and_handle_prompts(page, "https://outlook.cloud.microsoft/mail/", timeout=35000)
             search_input = await page.wait_for_selector('input[aria-label*="Buscar"], input[placeholder*="Buscar"]', timeout=20000)
             await search_input.fill(query)
             await page.keyboard.press("Enter")
@@ -105,8 +106,8 @@ async def m365_send_email(to: str, subject: str, body: str) -> str:
         page = None
         try:
             page = await context.new_page()
-            await page.goto("https://outlook.cloud.microsoft/mail/", wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(3000)
+            await navigate_and_handle_prompts(page, "https://outlook.cloud.microsoft/mail/", timeout=35000)
+            await page.wait_for_timeout(2000)
 
             new_btn = page.locator("button:has-text(\"Nuevo\")").first
             await new_btn.click()
@@ -153,13 +154,29 @@ async def m365_list_files() -> str:
         page = None
         try:
             page = await context.new_page()
-            await page.goto("https://outlook.cloud.microsoft/mail/", wait_until="domcontentloaded", timeout=30000)
+            await navigate_and_handle_prompts(page, "https://outlook.cloud.microsoft/mail/", timeout=35000)
             await page.wait_for_timeout(2000)
-            btn = await page.wait_for_selector("button[aria-label=\"OneDrive\"]", timeout=10000)
+            
+            selectors = [
+                'button[aria-label="OneDrive"]',
+                '#377c982d-9686-450e-9a7c-22aeaf1bc162',
+                'button[title*="OneDrive"]',
+                'button:has-text("OneDrive")',
+                'a[aria-label="OneDrive"]'
+            ]
+            btn = None
+            for sel in selectors:
+                try:
+                    btn = await page.wait_for_selector(sel, timeout=4000)
+                    if btn:
+                        break
+                except Exception:
+                    pass
+
             if not btn:
                 return "No se pudo acceder a la pestaña de OneDrive."
             await btn.click()
-            await page.wait_for_timeout(7000)
+            await page.wait_for_timeout(6000)
 
             sp_frame = None
             for f in page.frames:
@@ -168,18 +185,22 @@ async def m365_list_files() -> str:
                     break
             
             if not sp_frame:
-                return "No se pudo conectar con el explorador de archivos."
+                return "No se pudo conectar con el explorador de archivos de SharePoint."
 
-            items = await sp_frame.evaluate("""async () => {
-                const res = await fetch("https://inacapmailcl-my.sharepoint.com/personal/nilson_guerra_inacapmail_cl/_api/v2.0/me/drive/root/children", {
+            base_url = sp_frame.url.split("/_layouts/")[0].rstrip("/")
+            api_endpoint = f"{base_url}/_api/v2.0/me/drive/root/children"
+
+            items = await sp_frame.evaluate("""async (url) => {
+                const res = await fetch(url, {
                     headers: { "Accept": "application/json" }
                 });
+                if (!res.ok) return [];
                 const data = await res.json();
                 return data.value ? data.value.map(i => ({ name: i.name, is_folder: !!i.folder, size: i.size })) : [];
-            }""")
+            }""", api_endpoint)
 
             output = [f"=== Archivos en OneDrive ({len(items)}) ==="]
-            for item in items[:25]:
+            for item in items[:30]:
                 t = "[Carpeta]" if item["is_folder"] else "[Archivo]"
                 output.append(f"{t} {item['name']}")
             return "\n".join(output)

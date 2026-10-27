@@ -14,6 +14,7 @@ from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage
 
 from m365_bridge.config import get_config, save_config, DATA_DIR
 from m365_bridge.sync import run_sync
+from m365_bridge.browser import launch_interactive_login
 from m365_bridge.mcp_installer import install_claude_desktop, install_antigravity, install_opencode
 
 ICON_PATH = Path(__file__).parent.parent / "icons" / "m365.png"
@@ -151,6 +152,12 @@ class SettingsDialog(QDialog):
         self.max_mb_input.setSuffix(" MB")
         layout.addRow("Límite tamaño descarga:", self.max_mb_input)
 
+        self.btn_reauth = QPushButton("🔑 Reautenticar Motor en Navegador")
+        self.btn_reauth.setStyleSheet("padding: 6px 10px; font-weight: bold;")
+        self.btn_reauth.setToolTip("Abre una ventana de Chromium para ingresar credenciales o 2FA si la sesión expiró.")
+        self.btn_reauth.clicked.connect(self.reauthenticate)
+        layout.addRow("Sesión de Fondo (Playwright/MCP):", self.btn_reauth)
+
         btns = QHBoxLayout()
         btn_save = QPushButton("Guardar")
         btn_save.clicked.connect(self.save)
@@ -159,6 +166,16 @@ class SettingsDialog(QDialog):
         btns.addWidget(btn_save)
         btns.addWidget(btn_cancel)
         layout.addRow(btns)
+
+    def reauthenticate(self):
+        launch_interactive_login()
+        QMessageBox.information(
+            self,
+            "Reautenticación M365",
+            "Se ha abierto una ventana de Chromium.\n\n"
+            "Inicia sesión con tu cuenta institucional y completa cualquier verificación de dos factores (2FA).\n"
+            "Cuando cargue tu bandeja de entrada de Outlook, cierra la ventana del navegador."
+        )
 
     def browse_folder(self):
         d = QFileDialog.getExistingDirectory(self, "Seleccionar Carpeta para OneDrive", self.folder_input.text())
@@ -329,7 +346,17 @@ class MainWindow(QMainWindow):
         self.btn_sync.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.sync_status_label.setText("⚠ Error")
-        QMessageBox.warning(self, "Detalle", f"Error:\n{err}")
+        if "sesión" in err.lower() or "autenticación" in err.lower() or "2fa" in err.lower():
+            reply = QMessageBox.question(
+                self,
+                "Autenticación Requerida",
+                f"{err}\n\n¿Deseas abrir la ventana del navegador para iniciar sesión ahora?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                launch_interactive_login()
+        else:
+            QMessageBox.warning(self, "Detalle", f"Error:\n{err}")
 
 def main():
     app = QApplication(sys.argv)
