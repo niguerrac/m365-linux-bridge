@@ -253,17 +253,23 @@ async def upload_pending_files(
             if progress_callback:
                 progress_callback(f"Abriendo carpeta {rel_dir} en la nube...", uploaded)
 
-            await page.goto(target_url, wait_until="networkidle", timeout=30000)
-            await page.wait_for_timeout(2000)
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(2500)
 
-            btn_add = page.locator('button:has-text("Crear o cargar"), button:has-text("Cargar")').first
-            if await btn_add.count() == 0:
+            btn_add = None
+            try:
+                btn_add = await page.wait_for_selector('button[data-automationid="AddNew"], button:has-text("Crear o cargar")', timeout=10000)
+            except Exception:
+                pass
+
+            if not btn_add:
                 continue
+
             await btn_add.click()
             await page.wait_for_timeout(1000)
 
             async with page.expect_file_chooser(timeout=10000) as fc_info:
-                btn_up = page.locator('button:has-text("Carga de archivos"), button:has-text("Archivos")').first
+                btn_up = page.locator('button[data-automationid="uploadFile"], button:has-text("Carga de archivos")').first
                 await btn_up.click()
             
             fc = await fc_info.value
