@@ -5,7 +5,8 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QSpinBox, QFileDialog,
-    QMessageBox, QDialog, QFormLayout, QProgressBar, QTextEdit, QSizePolicy
+    QMessageBox, QDialog, QFormLayout, QProgressBar, QTextEdit, QSizePolicy,
+    QTabWidget, QListWidget, QListWidgetItem
 )
 from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
@@ -34,6 +35,90 @@ class SyncWorker(QThread):
             self.finished.emit(res)
         except Exception as e:
             self.error.emit(str(e))
+
+class SyncDetailsDialog(QDialog):
+    def __init__(self, sync_result=None, error_msg=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Detalles de Sincronización M365")
+        self.setMinimumWidth(580)
+        self.setMinimumHeight(420)
+
+        layout = QVBoxLayout(self)
+
+        if error_msg:
+            title = QLabel("⚠ Error durante la sincronización")
+            title.setStyleSheet("font-size: 15px; font-weight: bold; color: #d13438;")
+            layout.addWidget(title)
+
+            desc = QLabel("Detalle técnico del error reportado por el sistema:")
+            desc.setStyleSheet("color: #666; font-size: 11px;")
+            layout.addWidget(desc)
+
+            err_box = QTextEdit()
+            err_box.setPlainText(error_msg)
+            err_box.setReadOnly(True)
+            err_box.setStyleSheet("background-color: #fff0f0; border: 1px solid #f5c2c7; color: #842029; font-family: monospace; padding: 8px;")
+            layout.addWidget(err_box)
+
+            btn_fix = QPushButton("🔑 Abrir Navegador para Reautenticar Sesión")
+            btn_fix.setStyleSheet("background-color: #0078D4; color: white; font-weight: bold; padding: 8px 14px; border-radius: 4px;")
+            btn_fix.clicked.connect(launch_interactive_login)
+            layout.addWidget(btn_fix)
+        elif sync_result:
+            timestamp = sync_result.get("timestamp", "")
+            d_list = sync_result.get("downloaded_files", [])
+            u_list = sync_result.get("uploaded_files", [])
+            del_list = sync_result.get("deleted_files", [])
+
+            title = QLabel(f"✓ Sincronización finalizada ({timestamp})")
+            title.setStyleSheet("font-size: 15px; font-weight: bold; color: #107C41;")
+            layout.addWidget(title)
+
+            summary_lbl = QLabel(f"📥 Descargados: {len(d_list)}   |   📤 Subidos a OneDrive: {len(u_list)}   |   🗑️ Reciclados en nube: {len(del_list)}")
+            summary_lbl.setStyleSheet("font-size: 12px; color: #333; font-weight: bold; margin-bottom: 6px;")
+            layout.addWidget(summary_lbl)
+
+            tabs = QTabWidget()
+
+            # Pestaña Subidos
+            list_up = QListWidget()
+            for f in u_list:
+                list_up.addItem(f"📤 {f}")
+            if not u_list:
+                item = QListWidgetItem("Ningún archivo local nuevo para subir.")
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                list_up.addItem(item)
+            tabs.addTab(list_up, f"📤 Subidos ({len(u_list)})")
+
+            # Pestaña Descargados
+            list_down = QListWidget()
+            for f in d_list:
+                list_down.addItem(f"📥 {f}")
+            if not d_list:
+                item = QListWidgetItem("Ningún archivo nuevo en la nube para descargar.")
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                list_down.addItem(item)
+            tabs.addTab(list_down, f"📥 Descargados ({len(d_list)})")
+
+            # Pestaña Eliminados / Reciclados
+            list_del = QListWidget()
+            for f in del_list:
+                list_del.addItem(f"🗑️ {f}")
+            if not del_list:
+                item = QListWidgetItem("Ningún archivo eliminado en esta pasada.")
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                list_del.addItem(item)
+            tabs.addTab(list_del, f"🗑️ Reciclados ({len(del_list)})")
+
+            layout.addWidget(tabs)
+        else:
+            info = QLabel("Aún no se ha completado ninguna sincronización en esta sesión.")
+            info.setStyleSheet("color: #666; font-size: 13px; padding: 20px;")
+            layout.addWidget(info)
+
+        btn_close = QPushButton("Cerrar")
+        btn_close.clicked.connect(self.accept)
+        layout.addWidget(btn_close, alignment=Qt.AlignmentFlag.AlignRight)
 
 class McpDialog(QDialog):
     def __init__(self, parent=None):
@@ -262,10 +347,20 @@ class MainWindow(QMainWindow):
 
         toolbar.addStretch()
 
-        # Indicador de estado compacto dentro de la misma barra superior (no empuja hacia abajo)
-        self.sync_status_label = QLabel("")
-        self.sync_status_label.setStyleSheet("color: #0078D4; font-size: 11px; font-weight: bold; margin-right: 6px;")
-        toolbar.addWidget(self.sync_status_label)
+        # Indicador de estado interactivo clicable
+        self.last_sync_result = None
+        self.last_sync_error = None
+
+        self.btn_status = QPushButton("Listo para sincronizar")
+        self.btn_status.setFlat(True)
+        self.btn_status.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_status.setStyleSheet(
+            "color: #0078D4; font-size: 11px; font-weight: bold; margin-right: 6px; "
+            "border: 1px solid #cce4f7; border-radius: 3px; padding: 3px 8px; background-color: #f8fbff;"
+        )
+        self.btn_status.setToolTip("Haz clic aquí para ver los archivos subidos, descargados o el detalle del error")
+        self.btn_status.clicked.connect(self.show_sync_details)
+        toolbar.addWidget(self.btn_status)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedWidth(100)
@@ -321,11 +416,16 @@ class MainWindow(QMainWindow):
         dlg = McpDialog(self)
         dlg.exec()
 
+    def show_sync_details(self):
+        dlg = SyncDetailsDialog(sync_result=self.last_sync_result, error_msg=self.last_sync_error, parent=self)
+        dlg.exec()
+
     def start_sync(self):
         self.btn_sync.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
-        self.sync_status_label.setText("Conectando...")
+        self.btn_status.setText("Conectando...")
+        self.btn_status.setStyleSheet("color: #0078D4; font-size: 11px; font-weight: bold; margin-right: 6px; border: 1px solid #cce4f7; border-radius: 3px; padding: 3px 8px; background-color: #f8fbff;")
 
         self.worker = SyncWorker()
         self.worker.progress.connect(self.on_sync_progress)
@@ -334,31 +434,36 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def on_sync_progress(self, msg, count):
-        self.sync_status_label.setText(f"{msg[:30]} ({max(count, 0)})")
+        cnt_text = f" ({count})" if count >= 0 else ""
+        self.btn_status.setText(f"{msg[:32]}{cnt_text}")
 
     def on_sync_finished(self, res):
         self.btn_sync.setEnabled(True)
         self.progress_bar.setVisible(False)
+        self.last_sync_result = res
+        self.last_sync_error = None
         if isinstance(res, dict):
             d = res.get("downloaded", 0)
             u = res.get("uploaded", 0)
-            self.sync_status_label.setText(f"✓ Sincronizado (↓{d} ↑{u})")
-            QMessageBox.information(
-                self,
-                "Sincronización M365",
-                f"¡Sincronización bidireccional completada!\n\n"
-                f"📥 Descargados de la nube: {d}\n"
-                f"📤 Subidos a OneDrive: {u}"
+            del_c = res.get("deleted", 0)
+            self.btn_status.setText(f"✓ Sincronizado (↓{d} ↑{u} 🗑{del_c})")
+            self.btn_status.setStyleSheet(
+                "color: #107C41; font-size: 11px; font-weight: bold; margin-right: 6px; "
+                "border: 1px solid #c3e6cb; border-radius: 3px; padding: 3px 8px; background-color: #f2f9f4;"
             )
         else:
-            self.sync_status_label.setText(f"✓ Sincronizado ({res})")
-            QMessageBox.information(self, "Sincronización M365", f"¡Sincronización completada!\nArchivos actualizados: {res}")
+            self.btn_status.setText(f"✓ Sincronizado ({res})")
 
     def on_sync_error(self, err):
         self.btn_sync.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.sync_status_label.setText("⚠ Error")
-        if "sesión" in err.lower() or "autenticación" in err.lower() or "2fa" in err.lower():
+        self.last_sync_error = str(err)
+        self.btn_status.setText("⚠ Error (clic para ver detalle)")
+        self.btn_status.setStyleSheet(
+            "color: #d13438; font-size: 11px; font-weight: bold; margin-right: 6px; "
+            "border: 1px solid #f5c2c7; border-radius: 3px; padding: 3px 8px; background-color: #fff0f0;"
+        )
+        if "sesión" in str(err).lower() or "autenticación" in str(err).lower() or "2fa" in str(err).lower():
             reply = QMessageBox.question(
                 self,
                 "Autenticación Requerida",
@@ -367,8 +472,6 @@ class MainWindow(QMainWindow):
             )
             if reply == QMessageBox.StandardButton.Yes:
                 launch_interactive_login()
-        else:
-            QMessageBox.warning(self, "Detalle", f"Error:\n{err}")
 
 def main():
     app = QApplication(sys.argv)

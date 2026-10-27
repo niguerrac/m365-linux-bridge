@@ -113,10 +113,11 @@ class M365TrayApp:
         if isinstance(res, dict):
             d = res.get("downloaded", 0)
             u = res.get("uploaded", 0)
-            if not is_silent or (d > 0 or u > 0):
+            del_c = res.get("deleted", 0)
+            if not is_silent or (d > 0 or u > 0 or del_c > 0):
                 self.tray.showMessage(
                     "M365 Bridge",
-                    f"Sincronización terminada: ↓{d} descargados, ↑{u} subidos",
+                    f"Sincronización terminada: ↓{d} descargados, ↑{u} subidos, 🗑{del_c} reciclados",
                     QSystemTrayIcon.MessageIcon.Information,
                     4000
                 )

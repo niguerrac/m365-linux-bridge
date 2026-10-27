@@ -27,7 +27,7 @@ async def sync_remote_changes_delta_httpx(
     local_drive: Path,
     cfg: Dict[str, Any],
     progress_callback: Optional[Callable[[str, int], None]] = None
-) -> int:
+) -> List[str]:
     """Sincroniza cambios desde la nube hacia el disco local utilizando la API Delta de OneDrive a máxima velocidad HTTPX."""
     local_drive.mkdir(parents=True, exist_ok=True)
     max_mb = cfg.get("max_file_size_mb", 200) * 1024 * 1024
@@ -40,7 +40,7 @@ async def sync_remote_changes_delta_httpx(
         mode_text = "Comprobando cambios en la nube..." if saved_delta else "Indexación inicial en la nube..."
         progress_callback(mode_text, -1)
 
-    downloaded = 0
+    downloaded_files: List[str] = []
     total_items = 0
 
     while curr_url:
@@ -52,11 +52,10 @@ async def sync_remote_changes_delta_httpx(
             )
         except Exception as err:
             if progress_callback:
-                progress_callback(f"Error de red: {err}", downloaded)
+                progress_callback(f"Error de red: {err}", len(downloaded_files))
             break
 
         if resp.status_code in (410, 404, 400) and saved_delta:
-            # Token delta expirado en Microsoft, reiniciar escaneo delta
             set_kv("onedrive_delta_link", "")
             curr_url = f"{base_endpoint}/delta"
             saved_delta = None
@@ -132,7 +131,7 @@ async def sync_remote_changes_delta_httpx(
                 continue
 
             if progress_callback:
-                progress_callback(f"Descargando: {name}", downloaded)
+                progress_callback(f"Descargando: {name}", len(downloaded_files))
 
             target_path.parent.mkdir(parents=True, exist_ok=True)
             temp_path = target_path.with_suffix(target_path.suffix + ".tmp")
@@ -159,9 +158,9 @@ async def sync_remote_changes_delta_httpx(
                             remote_size=size,
                             direction="down"
                         )
-                        downloaded += 1
+                        downloaded_files.append(rel_str)
                         if progress_callback:
-                            progress_callback(f"Guardado: {name}", downloaded)
+                            progress_callback(f"Guardado: {name}", len(downloaded_files))
                     else:
                         if temp_path.exists():
                             temp_path.unlink()
@@ -173,13 +172,13 @@ async def sync_remote_changes_delta_httpx(
                     except Exception:
                         pass
                 if progress_callback:
-                    progress_callback(f"Error {name}: {err}", downloaded)
+                    progress_callback(f"Error {name}: {err}", len(downloaded_files))
 
         # Avanzar paginación de Delta
         if body.get("@odata.nextLink"):
             curr_url = body["@odata.nextLink"]
             if progress_callback:
-                progress_callback(f"Indexando nube ({total_items} items)...", downloaded)
+                progress_callback(f"Indexando nube ({total_items} items)...", len(downloaded_files))
         elif body.get("@odata.deltaLink"):
             set_kv("onedrive_delta_link", body["@odata.deltaLink"])
             curr_url = None
@@ -188,7 +187,62 @@ async def sync_remote_changes_delta_httpx(
             curr_url = None
             break
 
-    return downloaded
+    return downloaded_files
+
+def scan_pending_deletions(local_drive: Path) -> List[str]:
+    """Detecta archivos que estaban en la base de datos pero fueron borrados localmente en Linux."""
+    tracked = list_all_tracked_files()
+    deleted = []
+    for rel_path in tracked:
+        local_path = local_drive / rel_path
+        if not local_path.exists():
+            deleted.append(rel_path)
+    return deleted
+
+async def recycle_remote_files(
+    client: httpx.AsyncClient,
+    base_url: str,
+    tenant_path: str,
+    deleted_rel_paths: List[str],
+    progress_callback: Optional[Callable[[str, int], None]] = None
+) -> List[str]:
+    """Envía los archivos eliminados localmente a la Papelera de Reciclaje de OneDrive."""
+    if not deleted_rel_paths:
+        return []
+
+    try:
+        r_ctx = await client.post(
+            f"{base_url}/_api/contextinfo",
+            headers={"Accept": "application/json;odata=verbose", "User-Agent": "Mozilla/5.0"}
+        )
+        digest = r_ctx.json().get("d", {}).get("GetContextWebInformation", {}).get("FormDigestValue")
+    except Exception:
+        digest = None
+
+    recycled: List[str] = []
+    for rel_path in deleted_rel_paths:
+        if progress_callback:
+            progress_callback(f"Papelera nube: {Path(rel_path).name}", len(recycled))
+        
+        server_rel = f"{tenant_path}/Documents/{rel_path}"
+        recycle_url = f"{base_url}/_api/web/GetFileByServerRelativeUrl('{server_rel}')/recycle"
+        headers = {
+            "Accept": "application/json;odata=verbose",
+            "User-Agent": "Mozilla/5.0"
+        }
+        if digest:
+            headers["X-RequestDigest"] = digest
+
+        try:
+            r = await client.post(recycle_url, headers=headers)
+            # 200 = reciclado exitoso; 404 = ya no existía en la nube
+            if r.status_code in (200, 404):
+                remove_file_record(rel_path)
+                recycled.append(rel_path)
+        except Exception:
+            pass
+
+    return recycled
 
 def scan_pending_uploads(local_drive: Path, cfg: Dict[str, Any]) -> List[Path]:
     """Detecta archivos modificados o creados en Linux que requieren subida."""
@@ -228,13 +282,13 @@ async def upload_pending_files(
     local_drive: Path,
     pending_files: List[Path],
     progress_callback: Optional[Callable[[str, int], None]] = None
-) -> int:
+) -> List[str]:
     """Sube archivos locales a la carpeta correspondiente en OneDrive Web."""
     if not pending_files:
-        return 0
+        return []
 
     tenant_path = urlparse(base_url).path.rstrip("/")
-    uploaded = 0
+    uploaded_files: List[str] = []
 
     by_dir: Dict[str, List[Path]] = {}
     for f in pending_files:
@@ -251,7 +305,7 @@ async def upload_pending_files(
                 target_url = f"{base_url}/_layouts/15/onedrive.aspx?id={quote(server_rel)}"
 
             if progress_callback:
-                progress_callback(f"Abriendo carpeta {rel_dir} en la nube...", uploaded)
+                progress_callback(f"Abriendo carpeta {rel_dir} en la nube...", len(uploaded_files))
 
             await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(2500)
@@ -277,7 +331,7 @@ async def upload_pending_files(
             
             for f in files:
                 if progress_callback:
-                    progress_callback(f"Subiendo a OneDrive: {f.name}", uploaded)
+                    progress_callback(f"Subiendo a OneDrive: {f.name}", len(uploaded_files))
 
             await fc.set_files(paths)
             await page.wait_for_timeout(3000 + 1500 * len(paths))
@@ -298,17 +352,17 @@ async def upload_pending_files(
                     remote_size=st.st_size,
                     direction="up"
                 )
-                uploaded += 1
+                uploaded_files.append(rel_str)
                 if progress_callback:
-                    progress_callback(f"Subido a OneDrive: {f.name}", uploaded)
+                    progress_callback(f"Subido a OneDrive: {f.name}", len(uploaded_files))
 
         except Exception as err:
             if progress_callback:
-                progress_callback(f"Error subiendo en {rel_dir}: {err}", uploaded)
+                progress_callback(f"Error subiendo en {rel_dir}: {err}", len(uploaded_files))
 
-    return uploaded
+    return uploaded_files
 
-async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = None) -> Dict[str, int]:
+async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = None) -> Dict[str, Any]:
     cfg = get_config()
     local_drive = Path(cfg["sync_folder"])
     
@@ -362,32 +416,51 @@ async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = Non
                 raise RuntimeError("No se detectó el frame de SharePoint para explorar los archivos.")
 
             base_url = sp_frame.url.split("/_layouts/")[0].rstrip("/")
+            tenant_path = urlparse(base_url).path.rstrip("/")
             base_endpoint = f"{base_url}/_api/v2.0/me/drive/root"
 
             # Extraer cookies de sesión de SharePoint
             cookies = await context.cookies()
             sp_cookies = {c["name"]: c["value"] for c in cookies if "sharepoint.com" in c.get("domain", "")}
 
-            # 1. PASO 1: Descargar cambios desde la nube vía HTTPX + API Delta de Microsoft
+            downloaded_files: List[str] = []
+            deleted_files: List[str] = []
+            uploaded_files: List[str] = []
+
             async with httpx.AsyncClient(cookies=sp_cookies, timeout=40.0) as http_client:
-                downloaded = await sync_remote_changes_delta_httpx(
+                # 1. PASO 1: Descargar cambios desde la nube vía HTTPX + API Delta de Microsoft
+                downloaded_files = await sync_remote_changes_delta_httpx(
                     http_client, base_endpoint, local_drive, cfg, progress_callback
                 )
 
-            # 2. PASO 2: Detectar y subir archivos nuevos/modificados en local
+                # 2. PASO 2: Detectar y enviar a la papelera remota archivos eliminados en Linux
+                pending_deletions = scan_pending_deletions(local_drive)
+                if pending_deletions:
+                    if progress_callback:
+                        progress_callback(f"Reciclando {len(pending_deletions)} archivos en la nube...", 0)
+                    deleted_files = await recycle_remote_files(
+                        http_client, base_url, tenant_path, pending_deletions, progress_callback
+                    )
+
+            # 3. PASO 3: Detectar y subir archivos nuevos/modificados en local hacia OneDrive
             pending_uploads = scan_pending_uploads(local_drive, cfg)
-            uploaded = 0
             if pending_uploads:
                 if progress_callback:
                     progress_callback(f"Subiendo {len(pending_uploads)} archivos locales a OneDrive...", 0)
-                uploaded = await upload_pending_files(
+                uploaded_files = await upload_pending_files(
                     page, base_url, local_drive, pending_uploads, progress_callback
                 )
 
             return {
-                "downloaded": downloaded,
-                "uploaded": uploaded,
-                "total": downloaded + uploaded
+                "downloaded": len(downloaded_files),
+                "uploaded": len(uploaded_files),
+                "deleted": len(deleted_files),
+                "total": len(downloaded_files) + len(uploaded_files) + len(deleted_files),
+                "downloaded_files": downloaded_files,
+                "uploaded_files": uploaded_files,
+                "deleted_files": deleted_files,
+                "timestamp": time.strftime("%H:%M:%S"),
+                "error": None
             }
         finally:
             if should_close:
