@@ -36,6 +36,7 @@ async def sync_folder(
                 name: item.name,
                 is_folder: !!item.folder,
                 size: item.size || 0,
+                last_modified: item.lastModifiedDateTime || null,
                 download_url: item["@content.downloadUrl"] || item["@microsoft.graph.downloadUrl"]
             })) : [];
         } catch(e) {
@@ -56,6 +57,7 @@ async def sync_folder(
             is_folder = item.get("is_folder", False)
             download_url = item.get("download_url")
             size = item.get("size", 0)
+            last_modified_str = item.get("last_modified")
             target_path = local_dir / name
 
             if is_folder:
@@ -67,9 +69,26 @@ async def sync_folder(
                 if not download_url or size > max_mb:
                     continue
                 
-                # Si el archivo ya existe y tiene el tamaño exacto, omitir descarga
-                if target_path.exists() and target_path.stat().st_size == size:
-                    continue
+                # Timestamp remoto
+                remote_mtime = None
+                if last_modified_str:
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(last_modified_str.replace("Z", "+00:00"))
+                        remote_mtime = dt.timestamp()
+                    except Exception:
+                        pass
+
+                # Si ya existe con mismo tamaño y fecha igual o más reciente, omitir
+                if target_path.exists():
+                    local_stat = target_path.stat()
+                    if local_stat.st_size == size:
+                        if remote_mtime is not None:
+                            # Tolerancia de 2 segundos para diferencias de filesystem
+                            if local_stat.st_mtime >= (remote_mtime - 2):
+                                continue
+                        else:
+                            continue
 
                 if progress_callback:
                     progress_callback(f"Descargando: {name}", downloaded)
@@ -82,6 +101,11 @@ async def sync_folder(
                                 async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
                                     f.write(chunk)
                             temp_path.replace(target_path)
+                            if remote_mtime is not None:
+                                try:
+                                    os.utime(target_path, (remote_mtime, remote_mtime))
+                                except Exception:
+                                    pass
                             downloaded += 1
                             if progress_callback:
                                 progress_callback(f"Guardado: {name}", downloaded)
