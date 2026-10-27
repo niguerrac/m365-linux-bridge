@@ -1,68 +1,103 @@
-# M365 Linux Bridge
+# 🐧 M365 Linux Bridge
 
-Una solución integral de código abierto para utilizar la suite de **Microsoft 365 (Outlook, OneDrive y MCP para Inteligencia Artificial)** en cualquier distribución **Linux**, superando las políticas estrictas de restricción de consentimiento de administradores en Microsoft Entra ID / Azure AD (*"Need admin approval"*).
+Una solución integral, moderna y de código abierto para utilizar la suite de **Microsoft 365 (Outlook, OneDrive y MCP para Inteligencia Artificial)** en cualquier distribución **Linux**, superando las políticas estrictas de restricción de consentimiento de administradores en Microsoft Entra ID / Azure AD (*"Need admin approval" / "Se necesita aprobación del administrador"*).
 
 ---
 
 ## 🌟 Características Principales
 
-* **Bypass Nativo de Azure AD:** No requiere permisos de administrador de la institución ni registro previo de aplicaciones OAuth de terceros.
-* **Interfaz Integrada (PyQt6-WebEngine):** Outlook y OneDrive corren embebidos en una sola ventana nativa y moderna de escritorio.
-* **Sincronización Local de OneDrive en Tiempo Real:** Descarga continua y automática de carpetas institucionales a tu disco local (`~/OneDrive`), con indicador de archivo actual y barra de progreso.
-* **Servidor MCP Completo para IA (Lectura y Envío):**
+* **🔓 Bypass Transparente de Azure AD:** No requiere permisos de administrador de la institución ni registro de aplicaciones OAuth de terceros.
+* **🖥️ Interfaz Integrada (PyQt6-WebEngine):** Outlook y OneDrive corren embebidos en una sola ventana nativa y moderna de escritorio.
+* **📂 Sincronización Local de OneDrive en Tiempo Real:** Descarga continua y automática de carpetas institucionales a tu disco local (`~/OneDrive`), con indicador de progreso y resumen de archivos.
+* **🤖 Servidor MCP Completo para IA (Lectura y Envío):**
   * `m365_list_emails`: Lista correos recientes con remitente, asunto y fragmento.
   * `m365_search_emails`: Búsqueda de correos por palabras clave, personas o fechas.
   * `m365_send_email`: Redacción y despacho directo de correos desde la cuenta institucional.
   * `m365_list_files`: Explorador de archivos y carpetas de OneDrive.
-* **Instalador de MCP en 1 Clic:** Botón directo en la barra de herramientas para registrar el servidor en **Claude Desktop**, **Google Antigravity (AGY)** y **OpenCode**.
-* **Icono de Bandeja del Sistema (Tray):** Soporte oficial para KDE Plasma (Wayland) y X11 con acciones rápidas de sincronización.
+* **⚡ Instalador de MCP en 1 Clic:** Botón directo en la barra de herramientas para registrar el servidor en **Claude Desktop**, **Google Antigravity (AGY)** y **OpenCode**.
+* **📌 Icono de Bandeja del Sistema (Tray):** Soporte oficial para KDE Plasma (Wayland) y X11 con acciones rápidas de sincronización.
 
 ---
 
-## 📋 Resumen de Trabajo y Estado de la Sesión
+## 📦 Descarga e Instalación
 
-### Lo que dejamos listo y operativo:
-1. **Autenticación e inicio de sesión persistente:** Vinculado con la cuenta `nilson.guerra@inacapmail.cl` sin requerir reautenticación en cada reinicio.
-2. **Descarga masiva de OneDrive:** Sincronizados más de 4.8 GB de documentos, informes y proyectos en `~/OneDrive`.
-3. **Barra de herramientas compacta y moderna:** Corregida la alineación visual, dejando el 100% del área de trabajo para la vista web de Microsoft 365.
-4. **Envío de correos por IA validado:** Probado con éxito mediante el envío del correo de prueba a `s4wolf64@gmail.com`.
-5. **Instalación y accesos en el sistema:** Lanza con `M365 Linux Bridge` desde el menú de aplicaciones de KDE o desde la terminal.
+### Opción 1: AppImage Portable (Recomendada - Sin instalación)
+Compatible con cualquier distribución (Ubuntu, Debian, Fedora, Arch, CachyOS, openSUSE, etc.):
+
+1. Descarga el ejecutable desde la sección de **[Releases](https://github.com/niguerrac/m365-linux-bridge/releases)**:
+   ```bash
+   chmod +x M365-Linux-Bridge-x86_64.AppImage
+   ./M365-Linux-Bridge-x86_64.AppImage
+   ```
 
 ---
 
-## 🚀 Pasos para Retomar el Proyecto o Replicarlo en Otro PC
+### Opción 2: Instalación desde el Código Fuente
 
-### 1. Iniciar la aplicación en este equipo:
-* Desde el menú de aplicaciones: Busca **"M365 Linux Bridge"**.
-* O desde terminal:
-  ```bash
-  cd ~/m365-linux-bridge
-  .venv/bin/python m365_bridge/gui.py
-  ```
-
-### 2. Para replicarlo en un equipo nuevo:
 ```bash
-git clone https://github.com/TU_USUARIO/m365-linux-bridge.git
+git clone https://github.com/niguerrac/m365-linux-bridge.git
 cd m365-linux-bridge
 ./install.sh
 ```
 
-### 3. Para publicarlo en GitHub:
-```bash
-cd ~/m365-linux-bridge
-git remote add origin https://github.com/TU_USUARIO/m365-linux-bridge.git
-git branch -M main
-git push -u origin main
+El script `install.sh`:
+* Crea automáticamente el entorno virtual con `uv`.
+* Instala las dependencias necesarias (`PyQt6`, `PyQt6-WebEngine`, `playwright`, `mcp`, `httpx`).
+* Crea los accesos directos en el menú de aplicaciones de tu escritorio (`M365 Linux Bridge`).
+
+---
+
+## ⚙️ Configuración
+
+Puedes acceder a la configuración gráfica desde el botón **⚙** en la barra superior o editar directamente `~/.config/m365-bridge/config.json`:
+
+```json
+{
+  "institution_name": "Mi Institución",
+  "sync_folder": "/home/usuario/OneDrive",
+  "max_file_size_mb": 200,
+  "excluded_folders": ["Recordings", "Meetings", "Temporales"]
+}
 ```
 
 ---
 
-## 🛣️ Próximos Pasos Sugeridos (Backlog Futuro)
-* [ ] Agregar subida bidireccional de archivos locales hacia OneDrive (actualmente es unidireccional de la nube al disco).
-* [ ] Empaquetar como paquete AUR (`m365-linux-bridge-bin`) y/o Flatpak.
-* [ ] Soporte para calendario y reuniones de Teams vía MCP.
+## 🤖 Conectar con Asistentes de IA (MCP)
+
+Puedes hacer clic en el botón verde **`🤖 MCP / IA`** dentro de la barra de la aplicación para autoinstalarlo, o configurarlo manualmente:
+
+### Google Antigravity (AGY) (`~/.gemini/config/mcp_config.json`)
+```json
+{
+  "mcpServers": {
+    "m365": {
+      "command": "/ruta/a/m365-linux-bridge/.venv/bin/python",
+      "args": ["/ruta/a/m365-linux-bridge/m365_bridge/mcp_server.py"]
+    }
+  }
+}
+```
+
+### Claude Desktop (`~/.config/Claude/claude_desktop_config.json`)
+```json
+{
+  "mcpServers": {
+    "m365": {
+      "command": "/ruta/a/m365-linux-bridge/.venv/bin/python",
+      "args": ["/ruta/a/m365-linux-bridge/m365_bridge/mcp_server.py"]
+    }
+  }
+}
+```
+
+---
+
+## 🛣️ Próximos Pasos (Roadmap)
+* [ ] Soporte para subida bidireccional de archivos locales hacia OneDrive.
+* [ ] Empaquetado en AUR (`m365-linux-bridge-bin`) para usuarios de Arch / CachyOS.
+* [ ] Integración con el Calendario y reuniones de Microsoft Teams vía MCP.
 
 ---
 
 ## 📄 Licencia
-Distribuido bajo la licencia MIT.
+Este proyecto está bajo la Licencia **MIT**. Consulta el archivo `LICENSE` para más detalles.
