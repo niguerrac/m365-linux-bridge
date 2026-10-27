@@ -4,13 +4,14 @@ import time
 import httpx
 from pathlib import Path
 from urllib.parse import urlparse, quote
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, Tuple
 from playwright.async_api import async_playwright
 from m365_bridge.config import get_config
 from m365_bridge.browser import get_browser_context, navigate_and_handle_prompts
 from m365_bridge.sync_db import (
     record_synced_file, get_file_state, list_all_tracked_files,
-    get_kv, set_kv, remove_file_record
+    get_kv, set_kv, remove_file_record, get_file_by_remote_id,
+    record_synced_folder
 )
 
 IGNORED_EXTENSIONS = {".tmp", ".crdownload", ".swp", ".bak", ".part"}
@@ -27,7 +28,7 @@ async def sync_remote_changes_delta_httpx(
     local_drive: Path,
     cfg: Dict[str, Any],
     progress_callback: Optional[Callable[[str, int], None]] = None
-) -> List[str]:
+) -> Tuple[List[str], List[str]]:
     """Sincroniza cambios desde la nube hacia el disco local utilizando la API Delta de OneDrive a máxima velocidad HTTPX."""
     local_drive.mkdir(parents=True, exist_ok=True)
     max_mb = cfg.get("max_file_size_mb", 200) * 1024 * 1024
@@ -35,30 +36,32 @@ async def sync_remote_changes_delta_httpx(
 
     saved_delta = get_kv("onedrive_delta_link")
     curr_url = saved_delta if saved_delta else f"{base_endpoint}/delta"
+    is_initial_full_scan = not bool(saved_delta)
+    seen_remote_paths = set()
     
     if progress_callback:
         mode_text = "Comprobando cambios en la nube..." if saved_delta else "Indexación inicial en la nube..."
         progress_callback(mode_text, -1)
 
     downloaded_files: List[str] = []
+    deleted_locally: List[str] = []
     total_items = 0
 
     while curr_url:
         try:
-            resp = await client.get(
-                curr_url,
-                headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
-                timeout=35.0
-            )
+            resp = await client.get(curr_url, timeout=35.0)
         except Exception as err:
             if progress_callback:
                 progress_callback(f"Error de red: {err}", len(downloaded_files))
             break
 
-        if resp.status_code in (410, 404, 400) and saved_delta:
+        if resp.status_code in (400, 401, 403, 404, 410) and saved_delta:
+            # Token delta expirado o inválido en Microsoft, reiniciar escaneo delta
             set_kv("onedrive_delta_link", "")
             curr_url = f"{base_endpoint}/delta"
             saved_delta = None
+            is_initial_full_scan = True
+            seen_remote_paths.clear()
             continue
 
         if resp.status_code != 200:
@@ -69,7 +72,39 @@ async def sync_remote_changes_delta_httpx(
         total_items += len(items)
 
         for item in items:
+            item_id = item.get("id")
             name = item.get("name", "")
+
+            # 1. Borrado remoto: el archivo o carpeta fue eliminado en OneDrive
+            if "deleted" in item:
+                target_rel = None
+                if item_id:
+                    rec = get_file_by_remote_id(item_id)
+                    if rec:
+                        target_rel = rec.get("rel_path")
+                if not target_rel and name:
+                    parent_path = item.get("parentReference", {}).get("path", "")
+                    rel_dir = parent_path.split("/drive/root:")[-1].strip("/")
+                    target_rel = f"{rel_dir}/{name}".strip("/")
+
+                if target_rel:
+                    target_path = local_drive / target_rel
+                    if target_path.is_file():
+                        try:
+                            target_path.unlink()
+                            deleted_locally.append(target_rel)
+                        except Exception as e:
+                            print(f"Error borrando archivo local {target_rel}: {e}")
+                    elif target_path.is_dir():
+                        try:
+                            import shutil
+                            shutil.rmtree(target_path, ignore_errors=True)
+                            deleted_locally.append(target_rel)
+                        except Exception as e:
+                            print(f"Error borrando carpeta local {target_rel}: {e}")
+                    remove_file_record(target_rel)
+                continue
+
             if not name or name == "root":
                 continue
 
@@ -78,21 +113,33 @@ async def sync_remote_changes_delta_httpx(
             rel_str = f"{rel_dir}/{name}".strip("/")
             target_path = local_drive / rel_str
 
-            # Borrado remoto
-            if "deleted" in item:
-                remove_file_record(rel_str)
-                continue
+            if is_initial_full_scan:
+                seen_remote_paths.add(rel_str)
 
-            # Carpeta remota
+            # 2. Carpeta remota
             if item.get("folder"):
                 if any(part in excluded for part in target_path.parts):
                     continue
                 target_path.mkdir(parents=True, exist_ok=True)
+                record_synced_folder(rel_str, item_id)
                 continue
 
-            # Archivo remoto
+            # 3. Archivo remoto
             if any(part in excluded for part in target_path.parts):
                 continue
+
+            # Si el archivo fue renombrado o movido en la nube
+            if item_id:
+                old_rec = get_file_by_remote_id(item_id)
+                if old_rec and old_rec.get("rel_path") and old_rec.get("rel_path") != rel_str:
+                    old_path = local_drive / old_rec["rel_path"]
+                    if old_path.exists():
+                        target_path.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            old_path.rename(target_path)
+                            remove_file_record(old_rec["rel_path"])
+                        except Exception:
+                            pass
 
             size = item.get("size", 0)
             if size > max_mb:
@@ -121,7 +168,8 @@ async def sync_remote_changes_delta_httpx(
                             local_size=st.st_size,
                             remote_mtime=remote_mtime,
                             remote_size=size,
-                            direction="down"
+                            direction="down",
+                            remote_id=item_id
                         )
                         continue
                     elif remote_mtime is None:
@@ -156,7 +204,8 @@ async def sync_remote_changes_delta_httpx(
                             local_size=st.st_size,
                             remote_mtime=remote_mtime or st.st_mtime,
                             remote_size=size,
-                            direction="down"
+                            direction="down",
+                            remote_id=item_id
                         )
                         downloaded_files.append(rel_str)
                         if progress_callback:
@@ -187,7 +236,28 @@ async def sync_remote_changes_delta_httpx(
             curr_url = None
             break
 
-    return downloaded_files
+    # Si se completó un escaneo total, reconciliar archivos rastreados que fueron borrados en la nube
+    if is_initial_full_scan and seen_remote_paths:
+        all_tracked = list_all_tracked_files()
+        for tracked_rel, row in all_tracked.items():
+            if row.get("local_size", 0) >= 0 and tracked_rel not in seen_remote_paths:
+                local_f = local_drive / tracked_rel
+                if local_f.is_file():
+                    try:
+                        local_f.unlink()
+                        deleted_locally.append(tracked_rel)
+                    except Exception:
+                        pass
+                elif local_f.is_dir():
+                    try:
+                        import shutil
+                        shutil.rmtree(local_f, ignore_errors=True)
+                        deleted_locally.append(tracked_rel)
+                    except Exception:
+                        pass
+                remove_file_record(tracked_rel)
+
+    return downloaded_files, deleted_locally
 
 def scan_pending_deletions(local_drive: Path) -> List[str]:
     """Detecta archivos que estaban en la base de datos pero fueron borrados localmente en Linux."""
@@ -424,12 +494,19 @@ async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = Non
             sp_cookies = {c["name"]: c["value"] for c in cookies if "sharepoint.com" in c.get("domain", "")}
 
             downloaded_files: List[str] = []
+            deleted_locally_files: List[str] = []
             deleted_files: List[str] = []
             uploaded_files: List[str] = []
 
-            async with httpx.AsyncClient(cookies=sp_cookies, timeout=40.0) as http_client:
-                # 1. PASO 1: Descargar cambios desde la nube vía HTTPX + API Delta de Microsoft
-                downloaded_files = await sync_remote_changes_delta_httpx(
+            client_headers = {
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": sp_frame.url
+            }
+
+            async with httpx.AsyncClient(cookies=sp_cookies, headers=client_headers, timeout=40.0) as http_client:
+                # 1. PASO 1: Descargar cambios y aplicar borrados desde la nube vía HTTPX + API Delta
+                downloaded_files, deleted_locally_files = await sync_remote_changes_delta_httpx(
                     http_client, base_endpoint, local_drive, cfg, progress_callback
                 )
 
@@ -451,14 +528,16 @@ async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = Non
                     page, base_url, local_drive, pending_uploads, progress_callback
                 )
 
+            total_deleted = len(deleted_files) + len(deleted_locally_files)
             return {
                 "downloaded": len(downloaded_files),
                 "uploaded": len(uploaded_files),
-                "deleted": len(deleted_files),
-                "total": len(downloaded_files) + len(uploaded_files) + len(deleted_files),
+                "deleted": total_deleted,
+                "total": len(downloaded_files) + len(uploaded_files) + total_deleted,
                 "downloaded_files": downloaded_files,
                 "uploaded_files": uploaded_files,
                 "deleted_files": deleted_files,
+                "deleted_locally_files": deleted_locally_files,
                 "timestamp": time.strftime("%H:%M:%S"),
                 "error": None
             }

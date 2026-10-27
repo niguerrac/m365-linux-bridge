@@ -13,6 +13,7 @@ def get_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS files (
                 rel_path TEXT PRIMARY KEY,
+                remote_id TEXT,
                 local_mtime REAL,
                 local_size INTEGER,
                 remote_mtime REAL,
@@ -21,6 +22,13 @@ def get_db():
                 last_synced_at REAL
             )
         """)
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(files)")
+        cols = [c[1] for c in cur.fetchall()]
+        if "remote_id" not in cols:
+            conn.execute("ALTER TABLE files ADD COLUMN remote_id TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_remote_id ON files(remote_id)")
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS kv_store (
                 key TEXT PRIMARY KEY,
@@ -56,28 +64,55 @@ def get_file_state(rel_path: str) -> Optional[Dict[str, Any]]:
         return dict(row)
     return None
 
+def get_file_by_remote_id(remote_id: str) -> Optional[Dict[str, Any]]:
+    if not remote_id:
+        return None
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM files WHERE remote_id = ?", (remote_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return None
+
+def record_synced_folder(rel_path: str, remote_id: Optional[str] = None):
+    import time
+    conn = get_db()
+    with conn:
+        conn.execute("""
+            INSERT INTO files (rel_path, remote_id, local_mtime, local_size, remote_mtime, remote_size, last_sync_direction, last_synced_at)
+            VALUES (?, ?, 0, -1, 0, -1, 'down', ?)
+            ON CONFLICT(rel_path) DO UPDATE SET
+                remote_id = COALESCE(excluded.remote_id, files.remote_id),
+                last_synced_at = excluded.last_synced_at
+        """, (rel_path, remote_id, time.time()))
+    conn.close()
+
 def record_synced_file(
     rel_path: str,
     local_mtime: float,
     local_size: int,
     remote_mtime: float,
     remote_size: int,
-    direction: str = "down"
+    direction: str = "down",
+    remote_id: Optional[str] = None
 ):
     import time
     conn = get_db()
     with conn:
         conn.execute("""
-            INSERT INTO files (rel_path, local_mtime, local_size, remote_mtime, remote_size, last_sync_direction, last_synced_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO files (rel_path, remote_id, local_mtime, local_size, remote_mtime, remote_size, last_sync_direction, last_synced_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(rel_path) DO UPDATE SET
+                remote_id = COALESCE(excluded.remote_id, files.remote_id),
                 local_mtime = excluded.local_mtime,
                 local_size = excluded.local_size,
                 remote_mtime = excluded.remote_mtime,
                 remote_size = excluded.remote_size,
                 last_sync_direction = excluded.last_sync_direction,
                 last_synced_at = excluded.last_synced_at
-        """, (rel_path, local_mtime, local_size, remote_mtime, remote_size, direction, time.time()))
+        """, (rel_path, remote_id, local_mtime, local_size, remote_mtime, remote_size, direction, time.time()))
     conn.close()
 
 def remove_file_record(rel_path: str):

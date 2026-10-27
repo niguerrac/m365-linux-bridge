@@ -8,7 +8,11 @@ Una solución integral, moderna y de código abierto para utilizar la suite de *
 
 * **🔓 Bypass Transparente de Azure AD:** No requiere permisos de administrador de la institución ni registro de aplicaciones OAuth de terceros.
 * **🖥️ Interfaz Integrada (PyQt6-WebEngine):** Outlook y OneDrive corren embebidos en una sola ventana nativa y moderna de escritorio.
-* **📂 Sincronización Local de OneDrive en Tiempo Real:** Descarga continua y automática de carpetas institucionales a tu disco local (`~/OneDrive`), con indicador de progreso y resumen de archivos.
+* **📂 Sincronización Bidireccional de OneDrive en Tiempo Real:** 
+  * Motor bidireccional automático (Descarga, Subida y Eliminación).
+  * API Delta de Microsoft Graph a ultra-alta velocidad (HTTPX) con vigilancia local por `inotify` (Watchdog).
+  * Protección contra borrado accidental: los archivos eliminados localmente van a la Papelera de Reciclaje de OneDrive, y los borrados en la nube se limpian en el disco local.
+  * Diálogo interactivo de estado de sincronización con pestañas detalladas (Subidos, Descargados, Eliminados o traza de errores).
 * **🤖 Servidor MCP Completo para IA (Lectura y Envío):**
   * `m365_list_emails`: Lista correos recientes con remitente, asunto y fragmento.
   * `m365_search_emails`: Búsqueda de correos por palabras clave, personas o fechas.
@@ -93,7 +97,8 @@ Puedes hacer clic en el botón verde **`🤖 MCP / IA`** dentro de la barra de l
 ---
 
 ## 🛣️ Próximos Pasos (Roadmap)
-* [ ] Soporte para subida bidireccional de archivos locales hacia OneDrive.
+* [x] Soporte para subida bidireccional y borrado sincronizado de archivos entre Linux y OneDrive.
+* [x] Integración de API Delta de OneDrive e Inotify para sincronizaciones instantáneas con consumo cero de CPU.
 * [ ] Empaquetado en AUR (`m365-linux-bridge-bin`) para usuarios de Arch / CachyOS.
 * [ ] Integración con el Calendario y reuniones de Microsoft Teams vía MCP.
 

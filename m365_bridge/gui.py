@@ -68,13 +68,17 @@ class SyncDetailsDialog(QDialog):
             timestamp = sync_result.get("timestamp", "")
             d_list = sync_result.get("downloaded_files", [])
             u_list = sync_result.get("uploaded_files", [])
-            del_list = sync_result.get("deleted_files", [])
+            del_remote_list = sync_result.get("deleted_files", [])
+            del_local_list = sync_result.get("deleted_locally_files", [])
+            total_del = len(del_remote_list) + len(del_local_list)
 
             title = QLabel(f"✓ Sincronización finalizada ({timestamp})")
             title.setStyleSheet("font-size: 15px; font-weight: bold; color: #107C41;")
             layout.addWidget(title)
 
-            summary_lbl = QLabel(f"📥 Descargados: {len(d_list)}   |   📤 Subidos a OneDrive: {len(u_list)}   |   🗑️ Reciclados en nube: {len(del_list)}")
+            summary_lbl = QLabel(
+                f"📥 Descargados: {len(d_list)}   |   📤 Subidos: {len(u_list)}   |   🗑️ Eliminados: {total_del}"
+            )
             summary_lbl.setStyleSheet("font-size: 12px; color: #333; font-weight: bold; margin-bottom: 6px;")
             layout.addWidget(summary_lbl)
 
@@ -100,15 +104,17 @@ class SyncDetailsDialog(QDialog):
                 list_down.addItem(item)
             tabs.addTab(list_down, f"📥 Descargados ({len(d_list)})")
 
-            # Pestaña Eliminados / Reciclados
+            # Pestaña Eliminados (ambas direcciones)
             list_del = QListWidget()
-            for f in del_list:
-                list_del.addItem(f"🗑️ {f}")
-            if not del_list:
+            for f in del_local_list:
+                list_del.addItem(f"💻 [Eliminado en PC]: {f} (borrado desde la nube)")
+            for f in del_remote_list:
+                list_del.addItem(f"☁️ [Reciclado en nube]: {f} (borrado desde tu PC)")
+            if not del_local_list and not del_remote_list:
                 item = QListWidgetItem("Ningún archivo eliminado en esta pasada.")
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
                 list_del.addItem(item)
-            tabs.addTab(list_del, f"🗑️ Reciclados ({len(del_list)})")
+            tabs.addTab(list_del, f"🗑️ Eliminados ({total_del})")
 
             layout.addWidget(tabs)
         else:
