@@ -14,15 +14,15 @@ GUI_SCRIPT = BRIDGE_DIR / "m365_bridge" / "gui.py"
 ICON_PATH = BRIDGE_DIR / "icons" / "m365.png"
 
 class SyncWorker(QThread):
-    finished = pyqtSignal(int)
+    finished = pyqtSignal(object)
 
     def run(self):
         import asyncio
         try:
-            c = asyncio.run(run_sync())
-            self.finished.emit(c)
+            res = asyncio.run(run_sync())
+            self.finished.emit(res)
         except Exception:
-            self.finished.emit(-1)
+            self.finished.emit(None)
 
 class M365TrayApp:
     def __init__(self):
@@ -84,9 +84,18 @@ class M365TrayApp:
         self.worker.finished.connect(self.on_sync_done)
         self.worker.start()
 
-    def on_sync_done(self, count):
-        if count >= 0:
-            self.tray.showMessage("M365 Bridge", f"Sincronización terminada ({count} archivos)", QSystemTrayIcon.MessageIcon.Information, 4000)
+    def on_sync_done(self, res):
+        if isinstance(res, dict):
+            d = res.get("downloaded", 0)
+            u = res.get("uploaded", 0)
+            self.tray.showMessage(
+                "M365 Bridge",
+                f"Sincronización terminada: ↓{d} descargados, ↑{u} subidos",
+                QSystemTrayIcon.MessageIcon.Information,
+                4000
+            )
+        elif isinstance(res, int) and res >= 0:
+            self.tray.showMessage("M365 Bridge", f"Sincronización terminada ({res} archivos)", QSystemTrayIcon.MessageIcon.Information, 4000)
         else:
             self.tray.showMessage("M365 Bridge", "Error en sincronización", QSystemTrayIcon.MessageIcon.Warning, 4000)
 

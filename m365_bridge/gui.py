@@ -21,7 +21,7 @@ ICON_PATH = Path(__file__).parent.parent / "icons" / "m365.png"
 
 class SyncWorker(QThread):
     progress = pyqtSignal(str, int)
-    finished = pyqtSignal(int)
+    finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
     def run(self):
@@ -30,8 +30,8 @@ class SyncWorker(QThread):
             self.progress.emit(status_text, current_count)
 
         try:
-            count = asyncio.run(run_sync(progress_callback=on_progress))
-            self.finished.emit(count)
+            res = asyncio.run(run_sync(progress_callback=on_progress))
+            self.finished.emit(res)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -336,11 +336,23 @@ class MainWindow(QMainWindow):
     def on_sync_progress(self, msg, count):
         self.sync_status_label.setText(f"{msg[:30]} ({max(count, 0)})")
 
-    def on_sync_finished(self, count):
+    def on_sync_finished(self, res):
         self.btn_sync.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.sync_status_label.setText(f"✓ Sincronizado ({count})")
-        QMessageBox.information(self, "Sincronización M365", f"¡Sincronización completada!\nArchivos actualizados: {count}")
+        if isinstance(res, dict):
+            d = res.get("downloaded", 0)
+            u = res.get("uploaded", 0)
+            self.sync_status_label.setText(f"✓ Sincronizado (↓{d} ↑{u})")
+            QMessageBox.information(
+                self,
+                "Sincronización M365",
+                f"¡Sincronización bidireccional completada!\n\n"
+                f"📥 Descargados de la nube: {d}\n"
+                f"📤 Subidos a OneDrive: {u}"
+            )
+        else:
+            self.sync_status_label.setText(f"✓ Sincronizado ({res})")
+            QMessageBox.information(self, "Sincronización M365", f"¡Sincronización completada!\nArchivos actualizados: {res}")
 
     def on_sync_error(self, err):
         self.btn_sync.setEnabled(True)
