@@ -6,12 +6,14 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QSpinBox, QFileDialog,
     QMessageBox, QDialog, QFormLayout, QProgressBar, QTextEdit, QSizePolicy,
-    QTabWidget, QListWidget, QListWidgetItem
+    QTabWidget, QListWidget, QListWidgetItem, QCheckBox
 )
-from PyQt6.QtGui import QIcon
-from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
+from PyQt6.QtGui import QIcon, QDesktopServices
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QStandardPaths
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage
+from PyQt6.QtWebEngineCore import (
+    QWebEngineProfile, QWebEnginePage, QWebEngineDownloadRequest
+)
 
 from m365_bridge.config import get_config, save_config, DATA_DIR
 from m365_bridge.sync import run_sync
@@ -217,11 +219,20 @@ class McpDialog(QDialog):
         else:
             QMessageBox.warning(self, "OpenCode", f"No se pudo registrar: {path}")
 
+class M365WebPage(QWebEnginePage):
+    """Página WebEngine personalizada para soportar enlaces emergentes y descargas sin abortar navegación."""
+    def __init__(self, profile, parent=None):
+        super().__init__(profile, parent)
+
+    def createWindow(self, window_type):
+        # Permite que enlaces con target="_blank", window.open o solicitudes de descarga se ejecuten en la misma página
+        return self
+
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Configuración de M365 Linux Bridge")
-        self.setMinimumWidth(450)
+        self.setMinimumWidth(480)
         
         self.cfg = get_config()
         layout = QFormLayout(self)
@@ -237,11 +248,24 @@ class SettingsDialog(QDialog):
         folder_layout.addWidget(self.btn_browse)
         layout.addRow("Carpeta Local OneDrive:", folder_layout)
 
+        down_layout = QHBoxLayout()
+        default_down = str(Path.home() / "Descargas")
+        self.down_input = QLineEdit(self.cfg.get("downloads_folder", default_down))
+        self.btn_browse_down = QPushButton("Examinar...")
+        self.btn_browse_down.clicked.connect(self.browse_downloads_folder)
+        down_layout.addWidget(self.down_input)
+        down_layout.addWidget(self.btn_browse_down)
+        layout.addRow("Carpeta de Descargas Web:", down_layout)
+
+        self.ask_down_chk = QCheckBox("Preguntar siempre dónde guardar cada archivo descargado")
+        self.ask_down_chk.setChecked(self.cfg.get("ask_download_location", True))
+        layout.addRow("", self.ask_down_chk)
+
         self.max_mb_input = QSpinBox()
         self.max_mb_input.setRange(10, 50000)
         self.max_mb_input.setValue(self.cfg.get("max_file_size_mb", 200))
         self.max_mb_input.setSuffix(" MB")
-        layout.addRow("Límite tamaño descarga:", self.max_mb_input)
+        layout.addRow("Límite tamaño descarga automática:", self.max_mb_input)
 
         self.btn_reauth = QPushButton("🔑 Reautenticar Motor en Navegador")
         self.btn_reauth.setStyleSheet("padding: 6px 10px; font-weight: bold;")
@@ -273,9 +297,16 @@ class SettingsDialog(QDialog):
         if d:
             self.folder_input.setText(d)
 
+    def browse_downloads_folder(self):
+        d = QFileDialog.getExistingDirectory(self, "Seleccionar Carpeta para Descargas", self.down_input.text())
+        if d:
+            self.down_input.setText(d)
+
     def save(self):
         self.cfg["institution_name"] = self.inst_input.text().strip()
         self.cfg["sync_folder"] = self.folder_input.text().strip()
+        self.cfg["downloads_folder"] = self.down_input.text().strip()
+        self.cfg["ask_download_location"] = self.ask_down_chk.isChecked()
         self.cfg["max_file_size_mb"] = self.max_mb_input.value()
         save_config(self.cfg)
         self.accept()
@@ -294,6 +325,8 @@ class MainWindow(QMainWindow):
         self.web_profile = QWebEngineProfile("M365Profile", self)
         self.web_profile.setPersistentStoragePath(str(profile_storage))
         self.web_profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
+        self.web_profile.downloadRequested.connect(self.on_download_requested)
+        self._active_downloads = []
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -385,7 +418,7 @@ class MainWindow(QMainWindow):
 
         # --- NAVEGADOR EMBEBIDO (WEBVIEW) OCUPA TODO EL ESPACIO RESTANTE ---
         self.webview = QWebEngineView(self)
-        self.web_page = QWebEnginePage(self.web_profile, self.webview)
+        self.web_page = M365WebPage(self.web_profile, self.webview)
         self.webview.setPage(self.web_page)
         self.webview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         main_layout.addWidget(self.webview, 1)
@@ -478,6 +511,115 @@ class MainWindow(QMainWindow):
             )
             if reply == QMessageBox.StandardButton.Yes:
                 launch_interactive_login()
+
+    def on_download_requested(self, download: QWebEngineDownloadRequest):
+        suggested = download.suggestedFileName() or "archivo_descargado"
+        cfg = get_config()
+        downloads_dir = Path(cfg.get("downloads_folder", str(Path.home() / "Descargas")))
+        downloads_dir.mkdir(parents=True, exist_ok=True)
+
+        ask_location = cfg.get("ask_download_location", True)
+
+        if ask_location:
+            initial_path = str(downloads_dir / suggested)
+            save_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Guardar archivo descargado",
+                initial_path,
+                "Todos los archivos (*.*)"
+            )
+            if not save_path:
+                download.cancel()
+                return
+            target_path = Path(save_path)
+            target_dir = str(target_path.parent)
+            target_filename = target_path.name
+        else:
+            target_filename = suggested
+            target = downloads_dir / target_filename
+            stem = target.stem
+            suffix = target.suffix
+            counter = 1
+            while target.exists():
+                target_filename = f"{stem} ({counter}){suffix}"
+                target = downloads_dir / target_filename
+                counter += 1
+            target_dir = str(downloads_dir)
+
+        download.setDownloadDirectory(target_dir)
+        download.setDownloadFileName(target_filename)
+        download.accept()
+
+        self._active_downloads.append(download)
+
+        # Mostrar progreso en barra de herramientas
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.btn_status.setText(f"Descargando: {target_filename[:20]}...")
+        self.btn_status.setStyleSheet(
+            "color: #0078D4; font-size: 11px; font-weight: bold; margin-right: 6px; "
+            "border: 1px solid #cce4f7; border-radius: 3px; padding: 3px 8px; background-color: #f8fbff;"
+        )
+
+        final_path = Path(target_dir) / target_filename
+
+        def on_received_bytes_changed():
+            received = download.receivedBytes()
+            total = download.totalBytes()
+            if total > 0:
+                pct = int((received / total) * 100)
+                self.progress_bar.setValue(pct)
+                self.btn_status.setText(f"Descargando ({pct}%): {target_filename[:18]}")
+            else:
+                self.progress_bar.setRange(0, 0)
+                self.btn_status.setText(f"Descargando: {target_filename[:20]}")
+
+        def on_state_changed(state):
+            if state == QWebEngineDownloadRequest.DownloadState.DownloadCompleted:
+                self.progress_bar.setVisible(False)
+                self.btn_status.setText(f"✓ Descarga lista: {target_filename[:18]}")
+                self.btn_status.setStyleSheet(
+                    "color: #107C41; font-size: 11px; font-weight: bold; margin-right: 6px; "
+                    "border: 1px solid #c3e6cb; border-radius: 3px; padding: 3px 8px; background-color: #f2f9f4;"
+                )
+                if download in self._active_downloads:
+                    self._active_downloads.remove(download)
+
+                reply = QMessageBox.information(
+                    self,
+                    "Descarga Completada",
+                    f"Se ha descargado correctamente:\n\n{final_path}\n\n¿Deseas abrir la carpeta contenedora?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    import subprocess
+                    subprocess.Popen(["xdg-open", str(target_dir)])
+
+            elif state == QWebEngineDownloadRequest.DownloadState.DownloadInterrupted:
+                self.progress_bar.setVisible(False)
+                self.btn_status.setText(f"⚠ Error de descarga: {target_filename[:16]}")
+                self.btn_status.setStyleSheet(
+                    "color: #d13438; font-size: 11px; font-weight: bold; margin-right: 6px; "
+                    "border: 1px solid #f5c2c7; border-radius: 3px; padding: 3px 8px; background-color: #fff0f0;"
+                )
+                if download in self._active_downloads:
+                    self._active_downloads.remove(download)
+                QMessageBox.warning(
+                    self,
+                    "Descarga Interrumpida",
+                    f"No se pudo descargar {target_filename}.\n\nMotivo: {download.interruptReasonString()}"
+                )
+
+            elif state == QWebEngineDownloadRequest.DownloadState.DownloadCancelled:
+                self.progress_bar.setVisible(False)
+                self.btn_status.setText("Descarga cancelada")
+                if download in self._active_downloads:
+                    self._active_downloads.remove(download)
+
+        download.receivedBytesChanged.connect(on_received_bytes_changed)
+        download.stateChanged.connect(on_state_changed)
 
 def main():
     app = QApplication(sys.argv)

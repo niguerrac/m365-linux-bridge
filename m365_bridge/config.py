@@ -16,7 +16,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "auto_sync_interval_minutes": 60,
     "max_file_size_mb": 200,
     "excluded_folders": ["Recordings", "Meetings", "Temporales"],
-    "remote_debugging_port": 9222
+    "remote_debugging_port": 9222,
+    "ask_download_location": True,
+    "downloads_folder": str(Path.home() / "Descargas")
 }
 
 def ensure_dirs():
