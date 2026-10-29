@@ -95,12 +95,30 @@ async def m365_search_emails(query: str) -> str:
                 await context.close()
 
 @mcp.tool()
-async def m365_send_email(to: str, subject: str, body: str) -> str:
+async def m365_send_email(
+    to: str,
+    subject: str,
+    body: str,
+    attachments: Optional[List[str]] = None,
+    clear_signature: bool = True
+) -> str:
     """Envía un correo electrónico desde la cuenta institucional de Outlook.
-    to: Dirección de correo del destinatario (ej. alumno@inacapmail.cl o correo@gmail.com)
-    subject: Asunto del correo
-    body: Contenido del mensaje de texto
+    
+    Args:
+        to: Dirección de correo del destinatario (ej. alumno@inacapmail.cl o correo@gmail.com)
+        subject: Asunto del correo
+        body: Contenido del mensaje de texto
+        attachments: Lista opcional de rutas absolutas de archivos locales a adjuntar (ej. ['/home/nilson/documento.pdf'])
+        clear_signature: Si es True (por defecto), elimina la firma automática por defecto de Outlook para evitar firmas duplicadas cuando el mensaje ya incluye una firma o despedida. Si es False, preserva la firma automática y redacta el texto arriba de ella.
     """
+    valid_attachments: List[Path] = []
+    if attachments:
+        for att in attachments:
+            p = Path(att).expanduser().resolve()
+            if not p.exists() or not p.is_file():
+                return f"Error: El archivo adjunto no existe: {att}"
+            valid_attachments.append(p)
+
     async with async_playwright() as p:
         context, should_close = await get_browser_context(p)
         page = None
@@ -127,17 +145,35 @@ async def m365_send_email(to: str, subject: str, body: str) -> str:
             await subject_input.fill(subject)
             await page.wait_for_timeout(500)
 
-            # Cuerpo
+            # Adjuntar archivos si se proporcionaron
+            if valid_attachments:
+                attach_input = page.locator('input[type="file"][data-testid="local-computer-filein"], input[type="file"]').first
+                if await attach_input.count() > 0:
+                    await attach_input.set_input_files([str(f) for f in valid_attachments])
+                    await page.wait_for_timeout(2500 + 1000 * len(valid_attachments))
+
+            # Redactar cuerpo con control de firma
             body_input = page.locator("div[aria-label=\"Cuerpo del mensaje\"], div[role=\"textbox\"]").first
             await body_input.click()
-            await page.keyboard.type(body)
+
+            if clear_signature:
+                # Limpiar firma por defecto de Outlook para evitar duplicaciones
+                await page.keyboard.press("Control+a")
+                await page.keyboard.press("Backspace")
+                await page.keyboard.type(body)
+            else:
+                # Escribir antes de la firma existente
+                await page.keyboard.press("Control+Home")
+                await page.keyboard.type(body + "\n\n")
+
             await page.wait_for_timeout(1500)
 
             # Enviar mediante Ctrl+Enter (atajo nativo de Outlook)
             await page.keyboard.press("Control+Enter")
             await page.wait_for_timeout(4000)
 
-            return f"✓ Correo enviado exitosamente a: {to} | Asunto: {subject}"
+            att_info = f" con {len(valid_attachments)} archivo(s) adjunto(s)" if valid_attachments else ""
+            return f"✓ Correo enviado exitosamente a: {to} | Asunto: {subject}{att_info}"
         except Exception as e:
             return f"Error al enviar correo: {str(e)}"
         finally:

@@ -118,15 +118,61 @@ class SyncDetailsDialog(QDialog):
                 list_del.addItem(item)
             tabs.addTab(list_del, f"🗑️ Eliminados ({total_del})")
 
+            # Pestaña Registro / Log
+            log_box = QTextEdit()
+            log_box.setReadOnly(True)
+            log_box.setStyleSheet("font-family: monospace; font-size: 11px; background-color: #fdfdfd; padding: 6px;")
+            log_file = DATA_DIR / "sync.log"
+            if log_file.exists():
+                try:
+                    lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                    log_box.setPlainText("\n".join(lines[-250:]))
+                except Exception as e:
+                    log_box.setPlainText(f"Error al leer sync.log: {e}")
+            else:
+                log_box.setPlainText("El archivo sync.log aún no se ha generado.")
+            tabs.addTab(log_box, "📋 Registro (Log)")
+
             layout.addWidget(tabs)
         else:
             info = QLabel("Aún no se ha completado ninguna sincronización en esta sesión.")
-            info.setStyleSheet("color: #666; font-size: 13px; padding: 20px;")
+            info.setStyleSheet("color: #666; font-size: 13px; padding: 10px;")
             layout.addWidget(info)
 
+            # Mostrar log disponible aunque no haya sync en esta sesión
+            log_file = DATA_DIR / "sync.log"
+            if log_file.exists():
+                lbl = QLabel("Último registro de eventos (sync.log):")
+                lbl.setStyleSheet("font-weight: bold; font-size: 12px; margin-top: 6px;")
+                layout.addWidget(lbl)
+                log_box = QTextEdit()
+                log_box.setReadOnly(True)
+                log_box.setStyleSheet("font-family: monospace; font-size: 11px; background-color: #fdfdfd; padding: 6px;")
+                try:
+                    lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                    log_box.setPlainText("\n".join(lines[-250:]))
+                except Exception as e:
+                    log_box.setPlainText(f"Error al leer sync.log: {e}")
+                layout.addWidget(log_box)
+
+        btn_row = QHBoxLayout()
+        btn_open_log = QPushButton("📄 Abrir archivo sync.log")
+        btn_open_log.setStyleSheet("padding: 6px 12px; color: #0078D4; font-size: 11px;")
+        def open_external_log():
+            lf = DATA_DIR / "sync.log"
+            if lf.exists():
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(lf)))
+        btn_open_log.clicked.connect(open_external_log)
+        btn_row.addWidget(btn_open_log)
+
+        btn_row.addStretch()
+
         btn_close = QPushButton("Cerrar")
+        btn_close.setStyleSheet("padding: 6px 16px; font-weight: bold;")
         btn_close.clicked.connect(self.accept)
-        layout.addWidget(btn_close, alignment=Qt.AlignmentFlag.AlignRight)
+        btn_row.addWidget(btn_close)
+
+        layout.addLayout(btn_row)
 
 class McpDialog(QDialog):
     def __init__(self, parent=None):
@@ -473,8 +519,7 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def on_sync_progress(self, msg, count):
-        cnt_text = f" ({count})" if count >= 0 else ""
-        self.btn_status.setText(f"{msg[:32]}{cnt_text}")
+        self.btn_status.setText(msg[:48])
 
     def on_sync_finished(self, res):
         self.btn_sync.setEnabled(True)

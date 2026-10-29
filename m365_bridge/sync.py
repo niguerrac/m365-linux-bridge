@@ -1,18 +1,63 @@
 import asyncio
 import os
 import time
+import fcntl
+import logging
+from logging.handlers import RotatingFileHandler
 import httpx
 from pathlib import Path
 from urllib.parse import urlparse, quote
 from typing import Dict, Any, List, Optional, Callable, Tuple
 from playwright.async_api import async_playwright
-from m365_bridge.config import get_config
+from m365_bridge.config import get_config, DATA_DIR
 from m365_bridge.browser import get_browser_context, navigate_and_handle_prompts
 from m365_bridge.sync_db import (
     record_synced_file, get_file_state, list_all_tracked_files,
     get_kv, set_kv, remove_file_record, get_file_by_remote_id,
     record_synced_folder
 )
+
+_sync_logger = None
+
+def get_sync_logger():
+    global _sync_logger
+    if _sync_logger is None:
+        logger = logging.getLogger("m365_bridge.sync")
+        logger.setLevel(logging.INFO)
+        if not logger.handlers:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            log_file = DATA_DIR / "sync.log"
+            handler = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
+            formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+        _sync_logger = logger
+    return _sync_logger
+
+class SyncLock:
+    def __init__(self):
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self.lock_file = DATA_DIR / "sync.lock"
+        self._fd = None
+
+    def __enter__(self):
+        self._fd = open(self.lock_file, "w")
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (IOError, BlockingIOError):
+            self._fd.close()
+            self._fd = None
+            raise RuntimeError("Ya hay una sincronización en curso por otro proceso (GUI o Bandeja).")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._fd:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+                self._fd.close()
+            except Exception:
+                pass
+            self._fd = None
 
 IGNORED_EXTENSIONS = {".tmp", ".crdownload", ".swp", ".bak", ".part"}
 IGNORED_PREFIXES = (".~", "~$", ".", "~")
@@ -346,201 +391,229 @@ def scan_pending_uploads(local_drive: Path, cfg: Dict[str, Any]) -> List[Path]:
 
     return pending
 
-async def upload_pending_files(
-    page,
+async def ensure_remote_folder(
+    client: httpx.AsyncClient,
     base_url: str,
+    tenant_path: str,
+    rel_dir: str,
+    digest: str,
+    ensured_cache: set
+):
+    """Crea recursivamente las carpetas remotas en SharePoint si no existen."""
+    if not rel_dir or rel_dir == ".":
+        return
+    parts = Path(rel_dir).parts
+    current_acc = ""
+    for part in parts:
+        current_acc = f"{current_acc}/{part}" if current_acc else part
+        if current_acc in ensured_cache:
+            continue
+        server_rel = f"{tenant_path}/Documents/{current_acc}"
+        payload = {"__metadata": {"type": "SP.Folder"}, "ServerRelativeUrl": server_rel}
+        headers = {
+            "Accept": "application/json;odata=verbose",
+            "Content-Type": "application/json;odata=verbose",
+            "X-RequestDigest": digest
+        }
+        try:
+            await client.post(f"{base_url}/_api/web/folders", json=payload, headers=headers)
+        except Exception:
+            pass
+        ensured_cache.add(current_acc)
+
+async def upload_pending_files(
+    client: httpx.AsyncClient,
+    base_url: str,
+    tenant_path: str,
     local_drive: Path,
     pending_files: List[Path],
+    digest: str,
     progress_callback: Optional[Callable[[str, int], None]] = None
 ) -> List[str]:
-    """Sube archivos locales a la carpeta correspondiente en OneDrive Web."""
+    """Sube archivos locales hacia OneDrive mediante la API REST de SharePoint a alta velocidad."""
     if not pending_files:
         return []
 
-    tenant_path = urlparse(base_url).path.rstrip("/")
     uploaded_files: List[str] = []
+    ensured_folders: set = set()
+    total = len(pending_files)
+    logger = get_sync_logger()
 
-    by_dir: Dict[str, List[Path]] = {}
-    for f in pending_files:
+    up_headers = {
+        "Accept": "application/json;odata=verbose",
+        "Content-Type": "application/octet-stream",
+        "X-RequestDigest": digest
+    }
+
+    for idx, f in enumerate(pending_files, 1):
+        rel_str = str(f.relative_to(local_drive))
         rel_dir = str(f.parent.relative_to(local_drive))
-        by_dir.setdefault(rel_dir, []).append(f)
+        filename = f.name
 
-    for rel_dir, files in by_dir.items():
+        if progress_callback:
+            progress_callback(f"Subiendo ({idx}/{total}): {filename}", len(uploaded_files))
+        logger.info(f"Subiendo archivo ({idx}/{total}): {rel_str}")
+
         try:
-            if rel_dir == "." or not rel_dir:
-                server_rel = f"{tenant_path}/Documents"
-                target_url = f"{base_url}/_layouts/15/onedrive.aspx"
-            else:
-                server_rel = f"{tenant_path}/Documents/{rel_dir}"
-                target_url = f"{base_url}/_layouts/15/onedrive.aspx?id={quote(server_rel)}"
+            # 1. Asegurar que las carpetas remotas existan
+            await ensure_remote_folder(client, base_url, tenant_path, rel_dir, digest, ensured_folders)
 
-            if progress_callback:
-                progress_callback(f"Abriendo carpeta {rel_dir} en la nube...", len(uploaded_files))
+            # 2. Subir contenido del archivo mediante SharePoint REST API
+            folder_server_rel = f"{tenant_path}/Documents" if rel_dir in (".", "") else f"{tenant_path}/Documents/{rel_dir.replace('\\', '/')}"
+            up_url = f"{base_url}/_api/web/GetFolderByServerRelativeUrl('{folder_server_rel}')/Files/add(url='{quote(filename)}',overwrite=true)"
 
-            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(2500)
-
-            btn_add = None
-            try:
-                btn_add = await page.wait_for_selector('button[data-automationid="AddNew"], button:has-text("Crear o cargar")', timeout=10000)
-            except Exception:
-                pass
-
-            if not btn_add:
-                continue
-
-            await btn_add.click()
-            await page.wait_for_timeout(1000)
-
-            async with page.expect_file_chooser(timeout=10000) as fc_info:
-                btn_up = page.locator('button[data-automationid="uploadFile"], button:has-text("Carga de archivos")').first
-                await btn_up.click()
-            
-            fc = await fc_info.value
-            paths = [str(f) for f in files]
-            
-            for f in files:
-                if progress_callback:
-                    progress_callback(f"Subiendo a OneDrive: {f.name}", len(uploaded_files))
-
-            await fc.set_files(paths)
-            await page.wait_for_timeout(3000 + 1500 * len(paths))
-
-            replace_btn = page.locator('button:has-text("Reemplazar")').first
-            if await replace_btn.count() > 0 and await replace_btn.is_visible():
-                await replace_btn.click()
-                await page.wait_for_timeout(2500)
-
-            for f in files:
+            content = f.read_bytes()
+            r_up = await client.post(up_url, content=content, headers=up_headers)
+            if r_up.status_code in (200, 201):
+                d = r_up.json().get("d", {})
+                remote_id = d.get("UniqueId")
                 st = f.stat()
-                rel_str = str(f.relative_to(local_drive))
                 record_synced_file(
                     rel_path=rel_str,
                     local_mtime=st.st_mtime,
                     local_size=st.st_size,
                     remote_mtime=st.st_mtime,
                     remote_size=st.st_size,
-                    direction="up"
+                    direction="up",
+                    remote_id=remote_id
                 )
                 uploaded_files.append(rel_str)
-                if progress_callback:
-                    progress_callback(f"Subido a OneDrive: {f.name}", len(uploaded_files))
-
+                logger.info(f"Subido exitosamente: {rel_str} (ID: {remote_id})")
+            else:
+                logger.warning(f"Error HTTP {r_up.status_code} al subir {rel_str}: {r_up.text[:200]}")
         except Exception as err:
+            logger.error(f"Excepción al subir {rel_str}: {err}")
             if progress_callback:
-                progress_callback(f"Error subiendo en {rel_dir}: {err}", len(uploaded_files))
+                progress_callback(f"Error al subir {filename}: {err}", len(uploaded_files))
 
     return uploaded_files
 
 async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = None) -> Dict[str, Any]:
-    cfg = get_config()
-    local_drive = Path(cfg["sync_folder"])
-    
-    if progress_callback:
-        progress_callback("Conectando con Microsoft 365...", 0)
+    logger = get_sync_logger()
+    logger.info("=== Iniciando ciclo de sincronización ===")
 
-    async with async_playwright() as p:
-        context, should_close = await get_browser_context(p)
-        try:
-            page = await context.new_page()
-            await navigate_and_handle_prompts(page, "https://outlook.cloud.microsoft/mail/", timeout=35000)
-            
-            if progress_callback:
-                progress_callback("Abriendo OneDrive...", 0)
+    with SyncLock():
+        cfg = get_config()
+        local_drive = Path(cfg["sync_folder"])
 
-            btn = None
-            selectors = [
-                'button[aria-label="OneDrive"]',
-                'button[id="377c982d-9686-450e-9a7c-22aeaf1bc162"]',
-                'button[title*="OneDrive"]',
-                'button:has-text("OneDrive")',
-                'a[aria-label="OneDrive"]'
-            ]
-            for sel in selectors:
-                try:
-                    btn = await page.wait_for_selector(sel, timeout=5000)
-                    if btn:
+        if progress_callback:
+            progress_callback("Conectando con Microsoft 365...", 0)
+
+        async with async_playwright() as p:
+            context, should_close = await get_browser_context(p)
+            try:
+                page = await context.new_page()
+                await navigate_and_handle_prompts(page, "https://outlook.cloud.microsoft/mail/", timeout=35000)
+
+                if progress_callback:
+                    progress_callback("Abriendo OneDrive...", 0)
+
+                btn = None
+                selectors = [
+                    'button[aria-label="OneDrive"]',
+                    'button[id="377c982d-9686-450e-9a7c-22aeaf1bc162"]',
+                    'button[title*="OneDrive"]',
+                    'button:has-text("OneDrive")',
+                    'a[aria-label="OneDrive"]'
+                ]
+                for sel in selectors:
+                    try:
+                        btn = await page.wait_for_selector(sel, timeout=5000)
+                        if btn:
+                            break
+                    except Exception:
+                        pass
+
+                if not btn:
+                    raise RuntimeError("No se halló el acceso a OneDrive dentro de la sesión de Microsoft 365.")
+
+                await btn.click()
+
+                if progress_callback:
+                    progress_callback("Conectando con explorador de archivos...", 0)
+
+                sp_frame = None
+                for _ in range(25):
+                    await page.wait_for_timeout(1000)
+                    for f in page.frames:
+                        if "sharepoint.com" in f.url:
+                            sp_frame = f
+                            break
+                    if sp_frame:
                         break
-                except Exception:
-                    pass
 
-            if not btn:
-                raise RuntimeError("No se halló el acceso a OneDrive dentro de la sesión de Microsoft 365.")
+                if not sp_frame:
+                    raise RuntimeError("No se detectó el frame de SharePoint para explorar los archivos.")
 
-            await btn.click()
+                base_url = sp_frame.url.split("/_layouts/")[0].rstrip("/")
+                tenant_path = urlparse(base_url).path.rstrip("/")
+                base_endpoint = f"{base_url}/_api/v2.0/me/drive/root"
 
-            if progress_callback:
-                progress_callback("Conectando con explorador de archivos...", 0)
+                # Extraer cookies de sesión de SharePoint
+                cookies = await context.cookies()
+                sp_cookies = {c["name"]: c["value"] for c in cookies if "sharepoint.com" in c.get("domain", "")}
 
-            sp_frame = None
-            for _ in range(25):
-                await page.wait_for_timeout(1000)
-                for f in page.frames:
-                    if "sharepoint.com" in f.url:
-                        sp_frame = f
-                        break
-                if sp_frame:
-                    break
-            
-            if not sp_frame:
-                raise RuntimeError("No se detectó el frame de SharePoint para explorar los archivos.")
+                downloaded_files: List[str] = []
+                deleted_locally_files: List[str] = []
+                deleted_files: List[str] = []
+                uploaded_files: List[str] = []
 
-            base_url = sp_frame.url.split("/_layouts/")[0].rstrip("/")
-            tenant_path = urlparse(base_url).path.rstrip("/")
-            base_endpoint = f"{base_url}/_api/v2.0/me/drive/root"
+                client_headers = {
+                    "Accept": "application/json",
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Referer": sp_frame.url
+                }
 
-            # Extraer cookies de sesión de SharePoint
-            cookies = await context.cookies()
-            sp_cookies = {c["name"]: c["value"] for c in cookies if "sharepoint.com" in c.get("domain", "")}
+                async with httpx.AsyncClient(cookies=sp_cookies, headers=client_headers, timeout=40.0) as http_client:
+                    # Obtener FormDigestValue para operaciones REST de modificación
+                    digest = None
+                    try:
+                        r_ctx = await http_client.post(
+                            f"{base_url}/_api/contextinfo",
+                            headers={"Accept": "application/json;odata=verbose"}
+                        )
+                        digest = r_ctx.json().get("d", {}).get("GetContextWebInformation", {}).get("FormDigestValue")
+                    except Exception as e:
+                        logger.warning(f"No se pudo obtener FormDigestValue: {e}")
 
-            downloaded_files: List[str] = []
-            deleted_locally_files: List[str] = []
-            deleted_files: List[str] = []
-            uploaded_files: List[str] = []
-
-            client_headers = {
-                "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Referer": sp_frame.url
-            }
-
-            async with httpx.AsyncClient(cookies=sp_cookies, headers=client_headers, timeout=40.0) as http_client:
-                # 1. PASO 1: Descargar cambios y aplicar borrados desde la nube vía HTTPX + API Delta
-                downloaded_files, deleted_locally_files = await sync_remote_changes_delta_httpx(
-                    http_client, base_endpoint, local_drive, cfg, progress_callback
-                )
-
-                # 2. PASO 2: Detectar y enviar a la papelera remota archivos eliminados en Linux
-                pending_deletions = scan_pending_deletions(local_drive)
-                if pending_deletions:
-                    if progress_callback:
-                        progress_callback(f"Reciclando {len(pending_deletions)} archivos en la nube...", 0)
-                    deleted_files = await recycle_remote_files(
-                        http_client, base_url, tenant_path, pending_deletions, progress_callback
+                    # 1. PASO 1: Descargar cambios y aplicar borrados desde la nube vía HTTPX + API Delta
+                    downloaded_files, deleted_locally_files = await sync_remote_changes_delta_httpx(
+                        http_client, base_endpoint, local_drive, cfg, progress_callback
                     )
 
-            # 3. PASO 3: Detectar y subir archivos nuevos/modificados en local hacia OneDrive
-            pending_uploads = scan_pending_uploads(local_drive, cfg)
-            if pending_uploads:
-                if progress_callback:
-                    progress_callback(f"Subiendo {len(pending_uploads)} archivos locales a OneDrive...", 0)
-                uploaded_files = await upload_pending_files(
-                    page, base_url, local_drive, pending_uploads, progress_callback
-                )
+                    # 2. PASO 2: Detectar y enviar a la papelera remota archivos eliminados en Linux
+                    pending_deletions = scan_pending_deletions(local_drive)
+                    if pending_deletions:
+                        if progress_callback:
+                            progress_callback(f"Reciclando {len(pending_deletions)} archivos en la nube...", 0)
+                        deleted_files = await recycle_remote_files(
+                            http_client, base_url, tenant_path, pending_deletions, progress_callback
+                        )
 
-            total_deleted = len(deleted_files) + len(deleted_locally_files)
-            return {
-                "downloaded": len(downloaded_files),
-                "uploaded": len(uploaded_files),
-                "deleted": total_deleted,
-                "total": len(downloaded_files) + len(uploaded_files) + total_deleted,
-                "downloaded_files": downloaded_files,
-                "uploaded_files": uploaded_files,
-                "deleted_files": deleted_files,
-                "deleted_locally_files": deleted_locally_files,
-                "timestamp": time.strftime("%H:%M:%S"),
-                "error": None
-            }
-        finally:
-            if should_close:
-                await context.close()
+                    # 3. PASO 3: Subir archivos nuevos/modificados en Linux hacia OneDrive vía SharePoint REST
+                    pending_uploads = scan_pending_uploads(local_drive, cfg)
+                    if pending_uploads and digest:
+                        if progress_callback:
+                            progress_callback(f"Subiendo {len(pending_uploads)} archivos locales a OneDrive...", 0)
+                        uploaded_files = await upload_pending_files(
+                            http_client, base_url, tenant_path, local_drive, pending_uploads, digest, progress_callback
+                        )
+
+                total_deleted = len(deleted_files) + len(deleted_locally_files)
+                summary = {
+                    "downloaded": len(downloaded_files),
+                    "uploaded": len(uploaded_files),
+                    "deleted": total_deleted,
+                    "total": len(downloaded_files) + len(uploaded_files) + total_deleted,
+                    "downloaded_files": downloaded_files,
+                    "uploaded_files": uploaded_files,
+                    "deleted_files": deleted_files,
+                    "deleted_locally_files": deleted_locally_files,
+                    "timestamp": time.strftime("%H:%M:%S"),
+                    "error": None
+                }
+                logger.info(f"Sincronización finalizada exitosamente: ↓{len(downloaded_files)} ↑{len(uploaded_files)} 🗑{total_deleted}")
+                return summary
+            finally:
+                if should_close:
+                    await context.close()
