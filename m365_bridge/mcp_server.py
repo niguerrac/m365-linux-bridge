@@ -148,12 +148,13 @@ async def m365_send_email(
             await new_btn.click()
             await page.wait_for_timeout(2500)
 
-            # Escribir destinatarios principales de forma instantánea
+            # Escribir destinatarios principales de forma instantánea y resolver tags
             to_input = page.locator('div[aria-label="Para"] input, div[aria-label="Para"]').first
             await to_input.click()
-            await page.keyboard.insert_text("; ".join(to_list) + ";")
-            await page.keyboard.press("Enter")
-            await page.wait_for_timeout(500)
+            for rec in to_list:
+                await page.keyboard.insert_text(rec)
+                await page.keyboard.press(";")
+                await page.wait_for_timeout(100)
 
             # Escribir destinatarios en CC si existen
             if cc_list:
@@ -164,9 +165,10 @@ async def m365_send_email(
                         await cc_btn.click()
                         await page.wait_for_timeout(500)
                 await cc_input.click()
-                await page.keyboard.insert_text("; ".join(cc_list) + ";")
-                await page.keyboard.press("Enter")
-                await page.wait_for_timeout(500)
+                for rec in cc_list:
+                    await page.keyboard.insert_text(rec)
+                    await page.keyboard.press(";")
+                    await page.wait_for_timeout(100)
 
             # Asunto
             subject_input = page.locator("input[aria-label=\"Asunto\"], input[placeholder*=\"asunto\"]").first
@@ -197,8 +199,17 @@ async def m365_send_email(
 
             await page.wait_for_timeout(1500)
 
-            # Enviar mediante Ctrl+Enter (atajo nativo de Outlook)
-            await page.keyboard.press("Control+Enter")
+            # Enviar: verificar botón Enviar o usar Ctrl+Enter
+            send_btn = page.locator('button[aria-label="Enviar"], button:has-text("Enviar")').first
+            if await send_btn.is_visible():
+                for _ in range(15):
+                    disabled = await send_btn.get_attribute("aria-disabled")
+                    if disabled != "true":
+                        break
+                    await page.wait_for_timeout(300)
+                await send_btn.click()
+            else:
+                await page.keyboard.press("Control+Enter")
             await page.wait_for_timeout(4000)
 
             att_info = f" con {len(valid_attachments)} archivo(s) adjunto(s)" if valid_attachments else ""
