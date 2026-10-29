@@ -2,7 +2,7 @@ import sys, os; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(
 import asyncio
 import json
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from mcp.server.fastmcp import FastMCP
 from playwright.async_api import async_playwright
 from m365_bridge.browser import get_browser_context, navigate_and_handle_prompts
@@ -96,9 +96,10 @@ async def m365_search_emails(query: str) -> str:
 
 @mcp.tool()
 async def m365_send_email(
-    to: str,
+    to: Union[str, List[str]],
     subject: str,
     body: str,
+    cc: Optional[Union[str, List[str]]] = None,
     attachments: Optional[List[str]] = None,
     clear_signature: bool = True
 ) -> str:
@@ -111,6 +112,22 @@ async def m365_send_email(
         attachments: Lista opcional de rutas absolutas de archivos locales a adjuntar (ej. ['/home/nilson/documento.pdf'])
         clear_signature: Si es True (por defecto), elimina la firma automática por defecto de Outlook para evitar firmas duplicadas cuando el mensaje ya incluye una firma o despedida. Si es False, preserva la firma automática y redacta el texto arriba de ella.
     """
+    to_list: List[str] = []
+    if isinstance(to, list):
+        to_list = [t.strip() for t in to if t and t.strip()]
+    else:
+        to_list = [t.strip() for t in to.replace(";", ",").split(",") if t.strip()]
+
+    if not to_list:
+        return "Error: No se especificó ningún destinatario en 'to'."
+
+    cc_list: List[str] = []
+    if cc:
+        if isinstance(cc, list):
+            cc_list = [c.strip() for c in cc if c and c.strip()]
+        else:
+            cc_list = [c.strip() for c in cc.replace(";", ",").split(",") if c.strip()]
+
     valid_attachments: List[Path] = []
     if attachments:
         for att in attachments:
@@ -131,14 +148,29 @@ async def m365_send_email(
             await new_btn.click()
             await page.wait_for_timeout(2500)
 
-            # Escribir destinatario y validar con Enter
-            to_input = page.locator("div[aria-label=\"Para\"] input, div[aria-label=\"Para\"]").first
-            await to_input.click()
-            await page.keyboard.type(to)
-            await page.wait_for_timeout(500)
-            await page.keyboard.press("Enter")
-            await page.keyboard.press("Tab")
-            await page.wait_for_timeout(1000)
+            # Escribir destinatarios principales
+            to_input = page.locator('div[aria-label="Para"] input, div[aria-label="Para"]').first
+            for addr in to_list:
+                await to_input.click()
+                await page.keyboard.type(addr)
+                await page.wait_for_timeout(300)
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(200)
+
+            # Escribir destinatarios en CC si existen
+            if cc_list:
+                cc_input = page.locator('div[aria-label="CC"] input, div[aria-label="CC"]').first
+                if not await cc_input.is_visible():
+                    cc_btn = page.locator('button:has-text("CC")').first
+                    if await cc_btn.is_visible():
+                        await cc_btn.click()
+                        await page.wait_for_timeout(500)
+                for c_addr in cc_list:
+                    await cc_input.click()
+                    await page.keyboard.type(c_addr)
+                    await page.wait_for_timeout(300)
+                    await page.keyboard.press("Enter")
+                    await page.wait_for_timeout(200)
 
             # Asunto
             subject_input = page.locator("input[aria-label=\"Asunto\"], input[placeholder*=\"asunto\"]").first
@@ -147,7 +179,7 @@ async def m365_send_email(
 
             # Adjuntar archivos si se proporcionaron
             if valid_attachments:
-                attach_input = page.locator('input[type="file"][data-testid="local-computer-filein"], input[type="file"]').first
+                attach_input = page.locator('input[type="file"]:not([accept*="image"])').first
                 if await attach_input.count() > 0:
                     await attach_input.set_input_files([str(f) for f in valid_attachments])
                     await page.wait_for_timeout(2500 + 1000 * len(valid_attachments))
@@ -157,14 +189,15 @@ async def m365_send_email(
             await body_input.click()
 
             if clear_signature:
-                # Limpiar firma por defecto de Outlook para evitar duplicaciones
-                await page.keyboard.press("Control+a")
-                await page.keyboard.press("Backspace")
-                await page.keyboard.type(body)
+                # Limpiar completamente cualquier contenido preexistente / firma por defecto
+                await body_input.evaluate('el => { el.innerHTML = "<p><br></p>"; }')
+                await body_input.click()
+                await page.wait_for_timeout(200)
+                await page.keyboard.insert_text(body)
             else:
                 # Escribir antes de la firma existente
                 await page.keyboard.press("Control+Home")
-                await page.keyboard.type(body + "\n\n")
+                await page.keyboard.insert_text(body + "\n\n")
 
             await page.wait_for_timeout(1500)
 
@@ -173,7 +206,9 @@ async def m365_send_email(
             await page.wait_for_timeout(4000)
 
             att_info = f" con {len(valid_attachments)} archivo(s) adjunto(s)" if valid_attachments else ""
-            return f"✓ Correo enviado exitosamente a: {to} | Asunto: {subject}{att_info}"
+            to_summary = f"{len(to_list)} destinatarios" if len(to_list) > 1 else to_list[0]
+            cc_summary = f" | CC: {', '.join(cc_list)}" if cc_list else ""
+            return f"✓ Correo enviado exitosamente a: {to_summary}{cc_summary} | Asunto: {subject}{att_info}"
         except Exception as e:
             return f"Error al enviar correo: {str(e)}"
         finally:
