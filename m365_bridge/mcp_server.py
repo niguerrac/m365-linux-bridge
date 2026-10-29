@@ -148,14 +148,12 @@ async def m365_send_email(
             await new_btn.click()
             await page.wait_for_timeout(2500)
 
-            # Escribir destinatarios principales
+            # Escribir destinatarios principales de forma instantánea
             to_input = page.locator('div[aria-label="Para"] input, div[aria-label="Para"]').first
-            for addr in to_list:
-                await to_input.click()
-                await page.keyboard.type(addr)
-                await page.wait_for_timeout(300)
-                await page.keyboard.press("Enter")
-                await page.wait_for_timeout(200)
+            await to_input.click()
+            await page.keyboard.insert_text("; ".join(to_list) + ";")
+            await page.keyboard.press("Enter")
+            await page.wait_for_timeout(500)
 
             # Escribir destinatarios en CC si existen
             if cc_list:
@@ -165,12 +163,10 @@ async def m365_send_email(
                     if await cc_btn.is_visible():
                         await cc_btn.click()
                         await page.wait_for_timeout(500)
-                for c_addr in cc_list:
-                    await cc_input.click()
-                    await page.keyboard.type(c_addr)
-                    await page.wait_for_timeout(300)
-                    await page.keyboard.press("Enter")
-                    await page.wait_for_timeout(200)
+                await cc_input.click()
+                await page.keyboard.insert_text("; ".join(cc_list) + ";")
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(500)
 
             # Asunto
             subject_input = page.locator("input[aria-label=\"Asunto\"], input[placeholder*=\"asunto\"]").first
