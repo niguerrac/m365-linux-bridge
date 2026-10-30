@@ -12,7 +12,8 @@ from PyQt6.QtGui import QIcon, QDesktopServices
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QStandardPaths
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import (
-    QWebEngineProfile, QWebEnginePage, QWebEngineDownloadRequest
+    QWebEngineProfile, QWebEnginePage, QWebEngineDownloadRequest,
+    QWebEnginePermission, QWebEngineSettings
 )
 
 from m365_bridge.config import get_config, save_config, DATA_DIR
@@ -266,9 +267,27 @@ class McpDialog(QDialog):
             QMessageBox.warning(self, "OpenCode", f"No se pudo registrar: {path}")
 
 class M365WebPage(QWebEnginePage):
-    """Página WebEngine personalizada para soportar enlaces emergentes y descargas sin abortar navegación."""
+    """Página WebEngine personalizada para soportar enlaces emergentes, permisos de medios (Teams) y descargas."""
     def __init__(self, profile, parent=None):
         super().__init__(profile, parent)
+        # Manejo moderno de permisos (Qt 6.5+)
+        if hasattr(self, "permissionRequested"):
+            self.permissionRequested.connect(self.on_permission_requested)
+        # Compatibilidad con API anterior de permisos de características
+        if hasattr(self, "featurePermissionRequested"):
+            self.featurePermissionRequested.connect(self.on_feature_permission_requested)
+
+    def on_permission_requested(self, permission: QWebEnginePermission):
+        # Auto-conceder permisos para llamadas y reuniones (micrófono, cámara, notificaciones, pantalla)
+        permission.grant()
+
+    def on_feature_permission_requested(self, security_origin, feature):
+        # Auto-conceder en API legacy
+        self.setFeaturePermission(
+            security_origin,
+            feature,
+            QWebEnginePage.PermissionPolicy.PermissionGrantedByUser
+        )
 
     def createWindow(self, window_type):
         # Permite que enlaces con target="_blank", window.open o solicitudes de descarga se ejecuten en la misma página
@@ -371,8 +390,16 @@ class MainWindow(QMainWindow):
         self.web_profile = QWebEngineProfile("M365Profile", self)
         self.web_profile.setPersistentStoragePath(str(profile_storage))
         self.web_profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
+        self.web_profile.setPersistentPermissionsPolicy(QWebEngineProfile.PersistentPermissionsPolicy.StoreOnDisk)
         self.web_profile.downloadRequested.connect(self.on_download_requested)
         self._active_downloads = []
+
+        # Habilitar soporte multimedia, WebRTC y captura de pantalla para Teams
+        web_settings = self.web_profile.settings()
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.ScreenCaptureEnabled, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.WebRTCPublicInterfacesOnly, False)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -396,6 +423,11 @@ class MainWindow(QMainWindow):
         self.btn_onedrive.setStyleSheet("font-weight: bold; padding: 5px 10px;")
         self.btn_onedrive.clicked.connect(self.show_onedrive)
         toolbar.addWidget(self.btn_onedrive)
+
+        self.btn_teams = QPushButton(" Teams")
+        self.btn_teams.setStyleSheet("font-weight: bold; padding: 5px 10px;")
+        self.btn_teams.clicked.connect(self.show_teams)
+        toolbar.addWidget(self.btn_teams)
 
         toolbar.addSpacing(6)
 
@@ -478,6 +510,10 @@ class MainWindow(QMainWindow):
 
     def show_onedrive(self):
         url = self.cfg.get("onedrive_url", "https://www.office.com/launch/onedrive")
+        self.webview.setUrl(QUrl(url))
+
+    def show_teams(self):
+        url = self.cfg.get("teams_url", "https://teams.microsoft.com/v2/")
         self.webview.setUrl(QUrl(url))
 
     def go_back(self):

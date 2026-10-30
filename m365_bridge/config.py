@@ -13,6 +13,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "sync_folder": str(Path.home() / "M365-Drive"),
     "outlook_url": "https://outlook.cloud.microsoft/mail/",
     "onedrive_url": "https://www.office.com/launch/onedrive",
+    "teams_url": "https://teams.microsoft.com/v2/",
     "auto_sync_interval_minutes": 60,
     "max_file_size_mb": 200,
     "excluded_folders": ["Recordings", "Meetings", "Temporales"],
