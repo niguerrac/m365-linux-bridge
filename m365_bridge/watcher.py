@@ -5,9 +5,7 @@ from typing import Callable, Optional
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from m365_bridge.config import get_config
-
-IGNORED_EXTENSIONS = {".tmp", ".crdownload", ".swp", ".bak", ".part"}
-IGNORED_PREFIXES = (".~", "~$", ".", "~")
+from m365_bridge.sync import is_ignored_path
 
 class DebouncedSyncHandler(FileSystemEventHandler):
     def __init__(self, callback: Callable[[], None], debounce_seconds: float = 3.5):
@@ -18,17 +16,12 @@ class DebouncedSyncHandler(FileSystemEventHandler):
         self.timer: Optional[threading.Timer] = None
 
     def on_any_event(self, event: FileSystemEvent):
-        if event.is_directory:
-            return
-        
-        filename = Path(event.src_path).name
-        if filename.startswith(IGNORED_PREFIXES) or Path(event.src_path).suffix.lower() in IGNORED_EXTENSIONS:
-            return
-
+        src_path = Path(event.src_path)
         cfg = get_config()
         excluded = set(cfg.get("excluded_folders", []))
-        parts = Path(event.src_path).parts
-        if any(ex in parts for ex in excluded):
+        sync_folder = Path(cfg.get("sync_folder", str(Path.home() / "OneDrive")))
+
+        if is_ignored_path(src_path, excluded, sync_folder, is_dir=event.is_directory):
             return
 
         with self.lock:

@@ -59,13 +59,44 @@ class SyncLock:
                 pass
             self._fd = None
 
-IGNORED_EXTENSIONS = {".tmp", ".crdownload", ".swp", ".bak", ".part"}
+IGNORED_EXTENSIONS = {
+    ".tmp", ".crdownload", ".swp", ".bak", ".part", ".lock",
+    ".dex", ".class", ".flat", ".tab", ".keystream", ".len",
+    ".apk", ".ap_", ".aab", ".obj", ".o", ".pyc"
+}
 IGNORED_PREFIXES = (".~", "~$", ".", "~")
+DEFAULT_EXCLUDED_FOLDERS = {
+    "build", ".gradle", ".idea", "node_modules", "__pycache__",
+    ".pytest_cache", "bin", "obj", ".vs", ".dart_tool", "dist",
+    ".venv", "env", "target", "intermediates"
+}
+MAX_FOLDER_DEPTH = 10
+MAX_URL_LENGTH = 380
 
-def is_ignored_file(p: Path, excluded_folders: set) -> bool:
-    if p.name.startswith(IGNORED_PREFIXES) or p.suffix.lower() in IGNORED_EXTENSIONS:
+def is_ignored_path(p: Path, excluded_folders: set, local_drive: Optional[Path] = None, is_dir: bool = False) -> bool:
+    name = p.name
+    if not is_dir and (name.startswith(IGNORED_PREFIXES) or p.suffix.lower() in IGNORED_EXTENSIONS):
         return True
-    return any(part in excluded_folders for part in p.parts)
+    if is_dir and name.startswith(IGNORED_PREFIXES):
+        return True
+
+    all_excluded = DEFAULT_EXCLUDED_FOLDERS | excluded_folders
+    if any(part in all_excluded for part in p.parts):
+        return True
+
+    if local_drive is not None:
+        try:
+            rel = p.relative_to(local_drive)
+            subfolder_count = len(rel.parts) if is_dir else len(rel.parts) - 1
+            if subfolder_count > MAX_FOLDER_DEPTH:
+                return True
+        except ValueError:
+            pass
+
+    return False
+
+def is_ignored_file(p: Path, excluded_folders: set, local_drive: Optional[Path] = None) -> bool:
+    return is_ignored_path(p, excluded_folders, local_drive, is_dir=False)
 
 async def sync_remote_changes_delta_httpx(
     client: httpx.AsyncClient,
@@ -163,14 +194,14 @@ async def sync_remote_changes_delta_httpx(
 
             # 2. Carpeta remota
             if item.get("folder"):
-                if any(part in excluded for part in target_path.parts):
+                if is_ignored_path(target_path, excluded, local_drive, is_dir=True):
                     continue
                 target_path.mkdir(parents=True, exist_ok=True)
                 record_synced_folder(rel_str, item_id)
                 continue
 
             # 3. Archivo remoto
-            if any(part in excluded for part in target_path.parts):
+            if is_ignored_path(target_path, excluded, local_drive, is_dir=False):
                 continue
 
             # Si el archivo fue renombrado o movido en la nube
@@ -362,32 +393,48 @@ async def recycle_remote_files(
 def scan_pending_uploads(local_drive: Path, cfg: Dict[str, Any]) -> List[Path]:
     """Detecta archivos modificados o creados en Linux que requieren subida."""
     excluded = set(cfg.get("excluded_folders", []))
+    all_excluded = DEFAULT_EXCLUDED_FOLDERS | excluded
     max_mb = cfg.get("max_file_size_mb", 200) * 1024 * 1024
     pending = []
 
     if not local_drive.exists():
         return []
 
-    for p in local_drive.rglob("*"):
-        if not p.is_file():
-            continue
-        if is_ignored_file(p, excluded):
-            continue
+    for root, dirs, files in os.walk(local_drive):
+        root_path = Path(root)
         try:
-            stat = p.stat()
-            if stat.st_size > max_mb:
+            rel_root = root_path.relative_to(local_drive)
+            depth = len(rel_root.parts) if rel_root.parts else 0
+        except ValueError:
+            depth = 0
+
+        # Podar carpetas excluidas o que superen el límite de 10 subcarpetas
+        dirs[:] = [
+            d for d in dirs
+            if d not in all_excluded
+            and not d.startswith(IGNORED_PREFIXES)
+            and (depth + 1) <= MAX_FOLDER_DEPTH
+        ]
+
+        for fname in files:
+            p = root_path / fname
+            if is_ignored_path(p, excluded, local_drive, is_dir=False):
                 continue
-            
-            rel_str = str(p.relative_to(local_drive))
-            state = get_file_state(rel_str)
-            
-            if not state:
-                pending.append(p)
-            else:
-                if stat.st_mtime > (state["local_mtime"] + 2) or stat.st_size != state["local_size"]:
+            try:
+                stat = p.stat()
+                if stat.st_size > max_mb:
+                    continue
+
+                rel_str = str(p.relative_to(local_drive))
+                state = get_file_state(rel_str)
+
+                if not state:
                     pending.append(p)
-        except Exception:
-            pass
+                else:
+                    if stat.st_mtime > (state["local_mtime"] + 2) or stat.st_size != state["local_size"]:
+                        pending.append(p)
+            except Exception:
+                pass
 
     return pending
 
@@ -461,6 +508,9 @@ async def upload_pending_files(
             # 2. Subir contenido del archivo mediante SharePoint REST API
             folder_server_rel = f"{tenant_path}/Documents" if rel_dir in (".", "") else f"{tenant_path}/Documents/{rel_dir.replace('\\', '/')}"
             up_url = f"{base_url}/_api/web/GetFolderByServerRelativeUrl('{folder_server_rel}')/Files/add(url='{quote(filename)}',overwrite=true)"
+            if len(up_url) > MAX_URL_LENGTH:
+                logger.warning(f"URL demasiado larga para SharePoint ({len(up_url)} chars), omitiendo {rel_str}")
+                continue
 
             content = f.read_bytes()
             r_up = await client.post(up_url, content=content, headers=up_headers)
