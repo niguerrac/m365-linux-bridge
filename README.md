@@ -46,6 +46,14 @@ Compatible con cualquier distribución (Ubuntu, Debian, Fedora, Arch, CachyOS, o
 
 ---
 
+### Requisitos del sistema
+
+* **Chromium** (o Chrome/Brave) instalado: se usa para el inicio de sesión interactivo de Microsoft.
+  * Arch / CachyOS: `sudo pacman -S chromium` · Debian / Ubuntu: `sudo apt install chromium` · Fedora: `sudo dnf install chromium`
+* Solo para el AppImage: **FUSE 2** (ver el aviso de arriba).
+
+---
+
 ### Opción 2: Instalación desde el Código Fuente
 
 ```bash
@@ -56,7 +64,8 @@ cd m365-linux-bridge
 
 El script `install.sh`:
 * Crea automáticamente el entorno virtual con `uv`.
-* Instala las dependencias necesarias (`PyQt6`, `PyQt6-WebEngine`, `playwright`, `mcp`, `httpx`).
+* Instala las dependencias necesarias (`PyQt6`, `PyQt6-WebEngine`, `playwright`, `mcp`, `httpx`, `watchdog`).
+* Avisa si no encuentra Chromium.
 * Crea los accesos directos en el menú de aplicaciones de tu escritorio (`M365 Linux Bridge`).
 
 ---
@@ -103,6 +112,16 @@ Puedes hacer clic en el botón verde **`🤖 MCP / IA`** dentro de la barra de l
   }
 }
 ```
+
+---
+
+## 🩺 Solución de problemas
+
+| Síntoma | Causa y solución |
+|---|---|
+| `dlopen(): error loading libfuse.so.2` | Falta FUSE 2 (solo AppImage). `sudo pacman -S fuse2` / `sudo apt install libfuse2`. |
+| La ventana no abre o se cierra con `EGL not available` / `Failed to create RHI` | Tu GPU/driver no inicializa EGL. Desde v1.0.1 la app lo detecta y usa **render por software** automáticamente. Para forzarlo: `M365_SOFTWARE_RENDER=1`; para desactivar el fallback: `M365_SOFTWARE_RENDER=0`. |
+| `No se encontro Chromium` al iniciar sesión | Instala Chromium (ver *Requisitos del sistema*). |
 
 ---
 
