@@ -112,10 +112,18 @@ async def get_browser_context(p) -> Tuple[BrowserContext, bool]:
 
     cleanup_singleton_locks()
 
+    # El lanzador de Chromium (Arch/CachyOS) lee ~/.config/chromium-flags.conf y agrega sus
+    # flags; si traen URLs, el modo headless falla con "Multiple targets are not supported".
+    # Aislamos esta instancia de la config personal del usuario.
+    isolated_cfg = BROWSER_PROFILE_DIR.parent / "chromium_cfg"
+    isolated_cfg.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "XDG_CONFIG_HOME": str(isolated_cfg)}
+
     context = await p.chromium.launch_persistent_context(
         user_data_dir=str(BROWSER_PROFILE_DIR),
         executable_path=find_chromium(),
         headless=True,
+        env=env,
         args=[
             f"--remote-debugging-port={port}",
             "--no-first-run",
