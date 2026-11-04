@@ -525,6 +525,11 @@ async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = Non
                         pass
 
                 if not btn:
+                    if "login." in page.url or "microsoftonline.com" in page.url:
+                        raise RuntimeError(
+                            "La sesión de Microsoft 365 no está iniciada en el motor de sincronización. "
+                            "Inicia sesión una vez en la ventana del navegador que se abrirá."
+                        )
                     raise RuntimeError("No se halló el acceso a OneDrive dentro de la sesión de Microsoft 365.")
 
                 await btn.click()
