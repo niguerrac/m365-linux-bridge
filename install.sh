@@ -13,9 +13,15 @@ if ! command -v uv &> /dev/null; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
+# Requisito del sistema: Chromium (lo usa el login interactivo de Microsoft)
+if ! command -v chromium &> /dev/null && ! command -v chromium-browser &> /dev/null && ! command -v google-chrome-stable &> /dev/null; then
+    echo "AVISO: no se encontro Chromium. Instalalo antes de iniciar sesion:"
+    echo "  Arch/CachyOS: sudo pacman -S chromium | Debian/Ubuntu: sudo apt install chromium | Fedora: sudo dnf install chromium"
+fi
+
 echo "Configurando entorno virtual Python..."
 uv venv
-uv pip install playwright "mcp<2" PyQt6 httpx pillow
+uv pip install playwright "mcp<2" PyQt6 PyQt6-WebEngine httpx pillow watchdog
 
 # Crear accesos de escritorio (.desktop)
 APPLICATIONS_DIR="$HOME/.local/share/applications"

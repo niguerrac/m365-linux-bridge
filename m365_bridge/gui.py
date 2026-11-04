@@ -1,6 +1,10 @@
 import sys, os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+# Debe ir antes de importar PyQt6 (QtWebEngine lee estas variables al iniciar).
+from m365_bridge.render_fallback import apply_render_fallback
+apply_render_fallback()
+
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,

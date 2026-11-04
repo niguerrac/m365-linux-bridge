@@ -34,11 +34,24 @@ def cleanup_singleton_locks():
                 except Exception:
                     pass
 
+def find_chromium() -> str:
+    """Localiza un Chromium/Chrome del sistema (el login interactivo lo requiere)."""
+    import shutil
+    for name in ("chromium", "chromium-browser", "google-chrome-stable", "google-chrome", "brave", "brave-browser"):
+        path = shutil.which(name)
+        if path:
+            return path
+    raise RuntimeError(
+        "No se encontro Chromium. Instalalo (Arch/CachyOS: sudo pacman -S chromium; "
+        "Debian/Ubuntu: sudo apt install chromium; Fedora: sudo dnf install chromium)."
+    )
+
+
 def launch_interactive_login():
     """Lanza una ventana de Chromium con el perfil del motor para login interactivo / 2FA."""
     cleanup_singleton_locks()
     subprocess.Popen([
-        "/usr/bin/chromium",
+        find_chromium(),
         f"--user-data-dir={BROWSER_PROFILE_DIR}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -101,7 +114,7 @@ async def get_browser_context(p) -> Tuple[BrowserContext, bool]:
 
     context = await p.chromium.launch_persistent_context(
         user_data_dir=str(BROWSER_PROFILE_DIR),
-        executable_path="/usr/bin/chromium",
+        executable_path=find_chromium(),
         headless=True,
         args=[
             f"--remote-debugging-port={port}",
