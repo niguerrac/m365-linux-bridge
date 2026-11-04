@@ -41,7 +41,9 @@ class SyncWorker(QThread):
             res = asyncio.run(run_sync(progress_callback=on_progress))
             self.finished.emit(res)
         except Exception as e:
-            self.error.emit(str(e))
+            from m365_bridge.sync import get_sync_logger
+            get_sync_logger().exception("Fallo el ciclo de sincronizacion")
+            self.error.emit(f"{type(e).__name__}: {e}")
 
 class SyncDetailsDialog(QDialog):
     def __init__(self, sync_result=None, error_msg=None, parent=None):
