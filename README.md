@@ -120,7 +120,7 @@ Puedes hacer clic en el botón verde **`🤖 MCP / IA`** dentro de la barra de l
 | Síntoma | Causa y solución |
 |---|---|
 | `dlopen(): error loading libfuse.so.2` | Falta FUSE 2 (solo AppImage). `sudo pacman -S fuse2` / `sudo apt install libfuse2`. |
-| La ventana no abre o se cierra con `EGL not available` / `Failed to create RHI` | Tu GPU/driver no inicializa EGL. Desde v1.0.1 la app lo detecta y usa **render por software** automáticamente. Para forzarlo: `M365_SOFTWARE_RENDER=1`; para desactivar el fallback: `M365_SOFTWARE_RENDER=0`. |
+| La ventana no abre o se cierra con `EGL not available` / `Failed to create RHI` | Tu GPU/driver no inicializa EGL. Desde v1.0.2 la app lo detecta y usa **render por software** automáticamente. Para forzarlo: `M365_SOFTWARE_RENDER=1`; para desactivar el fallback: `M365_SOFTWARE_RENDER=0`. |
 | `No se encontro Chromium` al iniciar sesión | Instala Chromium (ver *Requisitos del sistema*). |
 
 ---

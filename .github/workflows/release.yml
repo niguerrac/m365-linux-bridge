@@ -38,6 +38,9 @@ jobs:
                       --onefile \
                       --windowed \
                       --add-data "icons/m365.png:icons" \
+                      --paths . \
+                      --collect-submodules m365_bridge \
+                      --collect-submodules watchdog \
                       m365_bridge/gui.py
 
       - name: Prepare AppDir for AppImage
