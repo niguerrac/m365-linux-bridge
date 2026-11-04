@@ -5,6 +5,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from m365_bridge.render_fallback import apply_render_fallback
 apply_render_fallback()
 
+# Expone el navegador embebido por CDP (solo localhost) para que el sync reutilice su sesion
+# en vez de abrir un segundo Chromium que pida login otra vez.
+from m365_bridge.config import get_config as _get_config
+os.environ.setdefault("QTWEBENGINE_REMOTE_DEBUGGING", str(_get_config().get("remote_debugging_port", 9222)))
+
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
