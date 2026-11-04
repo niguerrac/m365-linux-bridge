@@ -34,6 +34,16 @@ Compatible con cualquier distribución (Ubuntu, Debian, Fedora, Arch, CachyOS, o
    ./M365-Linux-Bridge-x86_64.AppImage
    ```
 
+> **⚠️ Si ves `dlopen(): error loading libfuse.so.2`:** los AppImage necesitan FUSE 2, que muchas distros ya no instalan por defecto (Arch, CachyOS, Fedora, Ubuntu 22.04+). Soluciones:
+>
+> | Distro | Comando |
+> |---|---|
+> | Arch / CachyOS | `sudo pacman -S fuse2` |
+> | Ubuntu / Debian | `sudo apt install libfuse2` (en Ubuntu 24.04: `libfuse2t64`) |
+> | Fedora | `sudo dnf install fuse-libs` |
+>
+> Sin instalar nada, también puedes ejecutarlo así: `APPIMAGE_EXTRACT_AND_RUN=1 ./M365-Linux-Bridge-x86_64.AppImage`
+
 ---
 
 ### Opción 2: Instalación desde el Código Fuente
