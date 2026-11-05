@@ -589,12 +589,22 @@ class MainWindow(QMainWindow):
         self.btn_sync.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.last_sync_error = str(err)
+        err_lower = str(err).lower()
+
+        if "ya hay una sincronización en curso" in err_lower:
+            self.btn_status.setText("⏳ Sincronización en curso (Bandeja)")
+            self.btn_status.setStyleSheet(
+                "color: #8a6d3b; font-size: 11px; font-weight: bold; margin-right: 6px; "
+                "border: 1px solid #faebcc; border-radius: 3px; padding: 3px 8px; background-color: #fcf8e3;"
+            )
+            return
+
         self.btn_status.setText("⚠ Error (clic para ver detalle)")
         self.btn_status.setStyleSheet(
             "color: #d13438; font-size: 11px; font-weight: bold; margin-right: 6px; "
             "border: 1px solid #f5c2c7; border-radius: 3px; padding: 3px 8px; background-color: #fff0f0;"
         )
-        if "sesión" in str(err).lower() or "autenticación" in str(err).lower() or "2fa" in str(err).lower():
+        if "sesión" in err_lower or "autenticación" in err_lower or "2fa" in err_lower:
             reply = QMessageBox.question(
                 self,
                 "Autenticación Requerida",

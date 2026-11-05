@@ -19,10 +19,13 @@ class SyncWorker(QThread):
 
     def run(self):
         import asyncio
+        from m365_bridge.sync import get_sync_logger
+        logger = get_sync_logger()
         try:
             res = asyncio.run(run_sync())
             self.finished.emit(res)
-        except Exception:
+        except Exception as e:
+            logger.exception(f"[Tray] Error en ciclo de sincronización: {e}")
             self.finished.emit(None)
 
 class M365TrayApp:

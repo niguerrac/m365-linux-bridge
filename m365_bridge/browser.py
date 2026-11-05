@@ -58,6 +58,17 @@ def launch_interactive_login():
         "--app=https://outlook.cloud.microsoft/mail/"
     ])
 
+def is_auth_challenge(url: str, title: str = "") -> bool:
+    """Verifica si la URL o el título corresponden a un portal de login o SSO institucional."""
+    u = url.lower()
+    t = title.lower()
+    auth_markers = ("login.microsoftonline.com", "login.live.com", "adfs.", "/adfs/", "login.", "auth.")
+    if any(m in u for m in auth_markers):
+        return True
+    if any(m in t for m in ("iniciar sesión", "sign in", "autenticación", "autenticacion", "adfs")):
+        return True
+    return False
+
 async def navigate_and_handle_prompts(page, target_url: str = "https://outlook.cloud.microsoft/mail/", timeout: int = 35000) -> bool:
     """Navega a la URL y resuelve automáticamente pantallas intermedias de Microsoft
     (¿Confía en su organización?, ¿Mantener la sesión iniciada?, etc.).
@@ -68,7 +79,13 @@ async def navigate_and_handle_prompts(page, target_url: str = "https://outlook.c
     for _ in range(8):
         await page.wait_for_timeout(1500)
         curr = page.url
-        if "login.microsoftonline.com" in curr or "login.live.com" in curr:
+        title = ""
+        try:
+            title = await page.title()
+        except Exception:
+            pass
+
+        if is_auth_challenge(curr, title):
             # Botón Continuar / Sí / Aceptar (idSIButton9)
             btn = await page.query_selector("#idSIButton9")
             if btn:
@@ -79,10 +96,13 @@ async def navigate_and_handle_prompts(page, target_url: str = "https://outlook.c
                 except Exception:
                     pass
             
-            # Detectar si requiere contraseña o usuario interactivo (sesión expirada)
-            has_pw = await page.query_selector("#i0118, input[type='password']")
+            # Detectar si requiere contraseña, usuario o MFA (sesión expirada o portal SSO)
+            has_pw = await page.query_selector("#i0118, input[type='password'], input[name='Password'], #passwordInput")
             has_mfa = await page.query_selector("div[data-viewid*='kmsi'], #idDiv_SAOTCAS_Title")
-            if has_pw or has_mfa:
+            has_user_input = await page.query_selector("#userNameInput, input[type='email'], #i0116")
+            is_sso = any(k in curr.lower() for k in ("adfs.", "/adfs/"))
+
+            if has_pw or has_mfa or has_user_input or is_sso:
                 raise RuntimeError(
                     "La sesión de Microsoft 365 ha caducado o requiere confirmación interactiva / 2FA. "
                     "Por favor inicia sesión con tu cuenta institucional."
@@ -90,8 +110,9 @@ async def navigate_and_handle_prompts(page, target_url: str = "https://outlook.c
         else:
             return True
 
-    if "login.microsoftonline.com" in page.url:
-        raise RuntimeError("No se pudo completar el inicio de sesión automático en Microsoft 365.")
+    curr = page.url
+    if is_auth_challenge(curr):
+        raise RuntimeError("La sesión de Microsoft 365 ha caducado o requiere confirmación interactiva / 2FA.")
     return True
 
 async def get_browser_context(p) -> Tuple[BrowserContext, bool]:

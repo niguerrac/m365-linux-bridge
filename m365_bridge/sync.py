@@ -41,9 +41,13 @@ class SyncLock:
         self._fd = None
 
     def __enter__(self):
-        self._fd = open(self.lock_file, "w")
+        self._fd = open(self.lock_file, "a+")
         try:
             fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._fd.seek(0)
+            self._fd.truncate()
+            self._fd.write(f"{os.getpid()}\n")
+            self._fd.flush()
         except (IOError, BlockingIOError):
             self._fd.close()
             self._fd = None
@@ -575,7 +579,8 @@ async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = Non
                         pass
 
                 if not btn:
-                    if "login." in page.url or "microsoftonline.com" in page.url:
+                    url_lower = page.url.lower()
+                    if any(k in url_lower for k in ("login.", "microsoftonline.com", "adfs.", "/adfs/")):
                         raise RuntimeError(
                             "La sesión de Microsoft 365 no está iniciada en el motor de sincronización. "
                             "Inicia sesión una vez en la ventana del navegador que se abrirá."
