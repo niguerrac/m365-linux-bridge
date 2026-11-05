@@ -75,7 +75,7 @@ DEFAULT_EXCLUDED_FOLDERS = {
     ".venv", "env", "target", "intermediates"
 }
 MAX_FOLDER_DEPTH = 10
-MAX_URL_LENGTH = 380
+MAX_URL_LENGTH = 1024
 
 def is_ignored_path(p: Path, excluded_folders: set, local_drive: Optional[Path] = None, is_dir: bool = False) -> bool:
     name = p.name
@@ -511,16 +511,50 @@ async def upload_pending_files(
 
             # 2. Subir contenido del archivo mediante SharePoint REST API
             folder_server_rel = f"{tenant_path}/Documents" if rel_dir in (".", "") else f"{tenant_path}/Documents/{rel_dir.replace('\\', '/')}"
-            up_url = f"{base_url}/_api/web/GetFolderByServerRelativeUrl('{folder_server_rel}')/Files/add(url='{quote(filename)}',overwrite=true)"
-            if len(up_url) > MAX_URL_LENGTH:
-                logger.warning(f"URL demasiado larga para SharePoint ({len(up_url)} chars), omitiendo {rel_str}")
-                continue
-
             content = f.read_bytes()
-            r_up = await client.post(up_url, content=content, headers=up_headers)
-            if r_up.status_code in (200, 201):
-                d = r_up.json().get("d", {})
-                remote_id = d.get("UniqueId")
+            r_up = None
+
+            # Método 1: SharePoint GetFolderByServerRelativeUrl clásico (si no excede 450 chars)
+            up_url = f"{base_url}/_api/web/GetFolderByServerRelativeUrl('{folder_server_rel}')/Files/add(url='{quote(filename)}',overwrite=true)"
+            if len(up_url) <= 450:
+                try:
+                    r_up = await client.post(up_url, content=content, headers=up_headers)
+                except Exception as post_err:
+                    logger.warning(f"Error en GetFolderByServerRelativeUrl para {rel_str}: {post_err}")
+
+            # Método 2: Fallback con addUsingPath y parámetros en query string (evita maxUrlLength en el path de IIS)
+            if r_up is None or (r_up.status_code == 400 and "maxurllength" in r_up.text.lower()):
+                alt_url = (
+                    f"{base_url}/_api/web/GetFolderByServerRelativePath(decodedurl=@f)/"
+                    f"Files/addUsingPath(decodedurl=@u,overwrite=true)?"
+                    f"@f='{quote(folder_server_rel)}'&@u='{quote(filename)}'"
+                )
+                try:
+                    r_up = await client.post(alt_url, content=content, headers=up_headers)
+                except Exception as alt_err:
+                    logger.warning(f"Fallback addUsingPath falló para {rel_str}: {alt_err}")
+
+            # Método 3: Fallback directo a OneDrive v2 API (PUT al endpoint /content)
+            if r_up is None or r_up.status_code not in (200, 201):
+                v2_url = f"{base_url}/_api/v2.0/me/drive/root:/{quote(rel_str)}:/content"
+                v2_headers = {
+                    "Content-Type": "application/octet-stream",
+                    "X-RequestDigest": digest
+                }
+                try:
+                    r_v2 = await client.put(v2_url, content=content, headers=v2_headers)
+                    if r_v2.status_code in (200, 201):
+                        r_up = r_v2
+                except Exception as v2_err:
+                    logger.warning(f"Fallback OneDrive v2 API falló para {rel_str}: {v2_err}")
+
+            if r_up and r_up.status_code in (200, 201):
+                res_data = r_up.json()
+                remote_id = (
+                    res_data.get("d", {}).get("UniqueId")
+                    or res_data.get("id")
+                    or res_data.get("d", {}).get("Id")
+                )
                 st = f.stat()
                 record_synced_file(
                     rel_path=rel_str,
@@ -534,7 +568,9 @@ async def upload_pending_files(
                 uploaded_files.append(rel_str)
                 logger.info(f"Subido exitosamente: {rel_str} (ID: {remote_id})")
             else:
-                logger.warning(f"Error HTTP {r_up.status_code} al subir {rel_str}: {r_up.text[:200]}")
+                status = r_up.status_code if r_up else "N/A"
+                text = r_up.text[:200] if r_up else "Sin respuesta"
+                logger.warning(f"Error HTTP {status} al subir {rel_str}: {text}")
         except Exception as err:
             logger.error(f"Excepción al subir {rel_str}: {err}")
             if progress_callback:
@@ -595,9 +631,15 @@ async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = Non
                 sp_frame = None
                 for _ in range(25):
                     await page.wait_for_timeout(1000)
-                    for f in page.frames:
-                        if "sharepoint.com" in f.url:
-                            sp_frame = f
+                    for p_item in context.pages:
+                        if "sharepoint.com" in p_item.url:
+                            sp_frame = p_item
+                            break
+                        for f in p_item.frames:
+                            if "sharepoint.com" in f.url:
+                                sp_frame = f
+                                break
+                        if sp_frame:
                             break
                     if sp_frame:
                         break
