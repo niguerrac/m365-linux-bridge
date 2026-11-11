@@ -38,6 +38,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller PyQt6 PyQt6-WebEngine playwright "mcp<2" httpx pillow watchdog
 
+      - name: Check syntax with the CI Python
+        run: python -m compileall -q m365_bridge
+
       - name: Build executable with PyInstaller
         run: |
           pyinstaller --name "m365-linux-bridge" \

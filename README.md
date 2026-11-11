@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/niguerrac/m365-linux-bridge/main/in
 * Crea el acceso **M365 Linux Bridge** con su icono en el menú de aplicaciones y deja la **bandeja** (sync automático) en el inicio de sesión.
 * **Para actualizar, vuelve a ejecutar el mismo comando.** La app también avisa al abrir cuando hay una versión nueva, y en **Configuración → Buscar actualizaciones** muestra la versión actual y actualiza con un clic.
 
-Variables opcionales: `M365_INSTALL_DIR` (otra carpeta), `M365_VERSION=v1.0.4` (fijar una versión).
+Variables opcionales: `M365_INSTALL_DIR` (otra carpeta), `M365_VERSION=v1.0.5` (fijar una versión).
 
 ---
 

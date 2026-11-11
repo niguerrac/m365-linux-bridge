@@ -576,7 +576,9 @@ async def upload_pending_files(
             await ensure_remote_folder(client, base_url, tenant_path, rel_dir, digest, ensured_folders)
 
             # 2. Subir contenido del archivo mediante SharePoint REST API
-            folder_server_rel = f"{tenant_path}/Documents" if rel_dir in (".", "") else f"{tenant_path}/Documents/{rel_dir.replace('\\', '/')}"
+            # (sin backslash dentro del f-string: es SyntaxError en Python < 3.12, y el CI usa 3.11)
+            rel_dir_posix = rel_dir.replace("\\", "/")
+            folder_server_rel = f"{tenant_path}/Documents" if rel_dir in (".", "") else f"{tenant_path}/Documents/{rel_dir_posix}"
             content = f.read_bytes()
             r_up = None
 
