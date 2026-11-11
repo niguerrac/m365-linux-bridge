@@ -113,6 +113,11 @@ async def sync_remote_changes_delta_httpx(
     local_drive.mkdir(parents=True, exist_ok=True)
     max_mb = cfg.get("max_file_size_mb", 200) * 1024 * 1024
     excluded = set(cfg.get("excluded_folders", []))
+    logger = get_sync_logger()
+    # .../_api/v2.0/me/drive/root -> .../_api/v2.0/me/drive (para /items/{id}/content)
+    drive_endpoint = base_endpoint.rsplit("/root", 1)[0]
+    skipped_no_url = 0
+    scan_completed = False
 
     saved_delta = get_kv("onedrive_delta_link")
     curr_url = saved_delta if saved_delta else f"{base_endpoint}/delta"
@@ -131,12 +136,14 @@ async def sync_remote_changes_delta_httpx(
         try:
             resp = await client.get(curr_url, timeout=35.0)
         except Exception as err:
+            logger.warning(f"Delta: error de red consultando cambios en la nube: {err}")
             if progress_callback:
                 progress_callback(f"Error de red: {err}", len(downloaded_files))
             break
 
         if resp.status_code in (400, 401, 403, 404, 410) and saved_delta:
             # Token delta expirado o inválido en Microsoft, reiniciar escaneo delta
+            logger.warning(f"Delta: token rechazado (HTTP {resp.status_code}); reiniciando escaneo completo")
             set_kv("onedrive_delta_link", "")
             curr_url = f"{base_endpoint}/delta"
             saved_delta = None
@@ -145,6 +152,7 @@ async def sync_remote_changes_delta_httpx(
             continue
 
         if resp.status_code != 200:
+            logger.warning(f"Delta: HTTP {resp.status_code} al consultar cambios: {resp.text[:200]}")
             break
 
         body = resp.json()
@@ -255,7 +263,13 @@ async def sync_remote_changes_delta_httpx(
                     elif remote_mtime is None:
                         continue
 
+            if not download_url and item_id:
+                # El delta de SharePoint (/_api/v2.0) no siempre trae @content.downloadUrl;
+                # el endpoint /content del item redirige a una URL de descarga válida.
+                download_url = f"{drive_endpoint}/items/{item_id}/content"
             if not download_url:
+                skipped_no_url += 1
+                logger.warning(f"Delta: sin URL de descarga para {rel_str}; omitido")
                 continue
 
             if progress_callback:
@@ -288,12 +302,15 @@ async def sync_remote_changes_delta_httpx(
                             remote_id=item_id
                         )
                         downloaded_files.append(rel_str)
+                        logger.info(f"Descargado: {rel_str}")
                         if progress_callback:
                             progress_callback(f"Guardado: {name}", len(downloaded_files))
                     else:
+                        logger.warning(f"Error HTTP {d_resp.status_code} al descargar {rel_str}")
                         if temp_path.exists():
                             temp_path.unlink()
             except Exception as err:
+                logger.error(f"Excepción al descargar {rel_str}: {err}")
                 temp_p = target_path.with_suffix(target_path.suffix + ".tmp")
                 if temp_p.exists():
                     try:
@@ -310,14 +327,25 @@ async def sync_remote_changes_delta_httpx(
                 progress_callback(f"Indexando nube ({total_items} items)...", len(downloaded_files))
         elif body.get("@odata.deltaLink"):
             set_kv("onedrive_delta_link", body["@odata.deltaLink"])
+            scan_completed = True
             curr_url = None
             break
         else:
             curr_url = None
             break
 
+    logger.info(
+        f"Delta: {total_items} items revisados, {len(downloaded_files)} descargados"
+        + (f", {skipped_no_url} sin URL" if skipped_no_url else "")
+        + (" (escaneo completo)" if is_initial_full_scan else "")
+    )
+
     # Si se completó un escaneo total, reconciliar archivos rastreados que fueron borrados en la nube
-    if is_initial_full_scan and seen_remote_paths:
+    # Solo si el escaneo llegó al deltaLink: uno cortado a medias vería una lista parcial
+    # y borraría localmente archivos que sí existen en la nube.
+    if is_initial_full_scan and not scan_completed:
+        logger.warning("Delta: escaneo completo interrumpido; se omite la reconciliación de borrados")
+    if is_initial_full_scan and scan_completed and seen_remote_paths:
         all_tracked = list_all_tracked_files()
         for tracked_rel, row in all_tracked.items():
             if row.get("local_size", 0) >= 0 and tracked_rel not in seen_remote_paths:
