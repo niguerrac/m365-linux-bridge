@@ -83,7 +83,12 @@ VERSION="$("$DIR/.venv/bin/python" -c 'import sys; sys.path.insert(0, "."); from
 if [ "${M365_NO_DESKTOP:-0}" != "1" ]; then
     APPLICATIONS_DIR="$HOME/.local/share/applications"
     AUTOSTART_DIR="$HOME/.config/autostart"
-    mkdir -p "$APPLICATIONS_DIR" "$AUTOSTART_DIR"
+    ICON_DIR="$HOME/.local/share/icons/hicolor/64x64/apps"
+    mkdir -p "$APPLICATIONS_DIR" "$AUTOSTART_DIR" "$ICON_DIR"
+    # Icono registrado en el tema: Icon=<nombre> funciona en cualquier menú/lanzador
+    # (con ruta absoluta algunos solo muestran el genérico)
+    cp "$DIR/icons/m365.png" "$ICON_DIR/m365-linux-bridge.png"
+    command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 
     cat << EOF > "$APPLICATIONS_DIR/m365-linux-bridge.desktop"
 [Desktop Entry]
@@ -91,7 +96,7 @@ Type=Application
 Name=M365 Linux Bridge
 Comment=Suite de integración de Outlook, OneDrive y MCP para Linux
 Exec=$DIR/.venv/bin/python $DIR/m365_bridge/gui.py
-Icon=$DIR/icons/m365.png
+Icon=m365-linux-bridge
 Terminal=false
 Categories=Office;Network;Email;FileManager;
 EOF
@@ -102,7 +107,7 @@ Type=Application
 Name=M365 Bridge Tray
 Comment=Icono de bandeja y sincronizador de Microsoft 365
 Exec=$DIR/.venv/bin/python $DIR/m365_bridge/tray.py
-Icon=$DIR/icons/m365.png
+Icon=m365-linux-bridge
 Terminal=false
 Categories=Network;Office;
 StartupNotify=false
