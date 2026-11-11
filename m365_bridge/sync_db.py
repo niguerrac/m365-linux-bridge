@@ -128,3 +128,19 @@ def list_all_tracked_files() -> Dict[str, Dict[str, Any]]:
     rows = cur.fetchall()
     conn.close()
     return {r["rel_path"]: dict(r) for r in rows}
+
+def remove_records_under(rel_prefix: str) -> int:
+    """Borra el registro de una carpeta y de todo lo que cuelga de ella."""
+    prefix = rel_prefix.replace("\\", "/").strip("/")
+    if not prefix:
+        raise ValueError("Prefijo vacío: se borraría toda la base")
+    # substr en vez de LIKE: los nombres de archivo traen '%' y '_' sin escapar
+    conn = get_db()
+    with conn:
+        cur = conn.execute(
+            "DELETE FROM files WHERE rel_path = ? OR substr(rel_path, 1, ?) = ?",
+            (prefix, len(prefix) + 1, prefix + "/"),
+        )
+        n = cur.rowcount
+    conn.close()
+    return n

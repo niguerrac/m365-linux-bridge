@@ -288,5 +288,72 @@ async def m365_list_files() -> str:
             if should_close:
                 await context.close()
 
+@mcp.tool()
+async def m365_sync_folders_list(path: str = "") -> str:
+    """Lista las subcarpetas de OneDrive dentro de `path` ("" = raíz) con su estado de
+    sincronización en este equipo: [on] se sincroniza, [off] desmarcada, [partial] tiene
+    subcarpetas con el estado contrario. Incluye tamaño en la nube y si existe localmente."""
+    from m365_bridge.cloud import open_sharepoint_session
+    from m365_bridge.selection import get_rules
+    from m365_bridge.selective_dialog import human_size
+    from m365_bridge.sync import list_remote_children
+
+    cfg = get_config()
+    rules = get_rules(cfg)
+    local = Path(cfg["sync_folder"])
+    path = path.strip("/")
+    async with open_sharepoint_session() as s:
+        items = await list_remote_children(s.client, s.drive_endpoint, path)
+    folders = sorted((i for i in items if i.get("folder")), key=lambda i: i["name"].lower())
+    out = [f"=== Carpetas en /{path} ({len(folders)}) ==="]
+    for i in folders:
+        rel = f"{path}/{i['name']}" if path else i["name"]
+        local_mark = "local" if (local / rel).is_dir() else "solo nube"
+        out.append(f"[{rules.state(rel)}] {rel} — {human_size(i.get('size', 0))} — {local_mark}")
+    return "\n".join(out)
+
+
+@mcp.tool()
+async def m365_sync_folder_set(path: str, sync: bool, confirmar_borrado: bool = False) -> str:
+    """Marca (sync=True) o desmarca (sync=False) una carpeta de OneDrive para sincronizar en
+    este equipo. Desmarcar BORRA la copia local (sigue en la nube): sin
+    confirmar_borrado=True solo devuelve qué se borraría. Pregúntale al usuario antes de
+    confirmar. Marcar encola la descarga completa para el próximo ciclo de sync."""
+    from m365_bridge.selection import (
+        apply_selection, diff_selection, folder_local_size, get_rules,
+    )
+    from m365_bridge.selective_dialog import human_size
+
+    cfg = get_config()
+    local = Path(cfg["sync_folder"])
+    old = get_rules(cfg)
+    new = old.copy()
+    try:
+        new.set_selected(path, sync)
+    except ValueError as e:
+        return f"Error: {e}"
+    to_delete, to_fetch = diff_selection(old, new, local)
+    if to_delete and not confirmar_borrado:
+        lines = []
+        for rel in to_delete:
+            if rel.endswith("/*"):
+                lines.append(f"- {rel[:-2]} (solo sus archivos sueltos)")
+            else:
+                size, count = folder_local_size(local / rel)
+                lines.append(f"- {rel}: {count} archivos, {human_size(size)}")
+        return ("NO APLICADO. Desmarcar borraría de este equipo (sigue en la nube):\n"
+                + "\n".join(lines) + "\nConfirma con el usuario y repite con confirmar_borrado=True.")
+    try:
+        res = apply_selection(new)
+    except RuntimeError as e:
+        return f"No se aplicó: {e} Reintenta cuando termine el ciclo."
+    msg = [f"Listo: '{path}' {'se sincroniza' if sync else 'ya no se sincroniza'}."]
+    if res["deleted_local"]:
+        msg.append("Borrado de este equipo: " + ", ".join(res["deleted_local"]))
+    if res["queued_download"]:
+        msg.append("Se descargará en el próximo ciclo: " + ", ".join(res["queued_download"]))
+    return "\n".join(msg)
+
+
 if __name__ == "__main__":
     mcp.run()

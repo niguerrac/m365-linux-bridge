@@ -58,6 +58,9 @@ class M365TrayApp:
         act_folder = menu.addAction("Abrir Carpeta Local")
         act_folder.triggered.connect(self.open_folder)
 
+        act_selective = menu.addAction("Carpetas sincronizadas…")
+        act_selective.triggered.connect(self.open_selective_sync)
+
         menu.addSeparator()
 
         act_quit = menu.addAction("Salir")
@@ -96,6 +99,15 @@ class M365TrayApp:
 
     def open_folder(self):
         subprocess.Popen(["xdg-open", str(self.sync_folder)])
+
+    def open_selective_sync(self):
+        from m365_bridge.selective_dialog import SelectiveSyncDialog
+        if getattr(self, "_selective_dlg", None) and self._selective_dlg.isVisible():
+            self._selective_dlg.raise_()
+            return
+        self._selective_dlg = SelectiveSyncDialog()
+        self._selective_dlg.accepted.connect(self.start_sync_silent)
+        self._selective_dlg.show()
 
     def start_sync_manual(self):
         if self.worker and self.worker.isRunning():

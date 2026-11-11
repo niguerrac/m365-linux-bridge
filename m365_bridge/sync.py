@@ -9,13 +9,14 @@ from pathlib import Path
 from urllib.parse import urlparse, quote
 from typing import Dict, Any, List, Optional, Callable, Tuple
 from playwright.async_api import async_playwright
-from m365_bridge.config import get_config, DATA_DIR
+from m365_bridge.config import get_config, save_config, DATA_DIR
 from m365_bridge.browser import get_browser_context, navigate_and_handle_prompts
 from m365_bridge.sync_db import (
     record_synced_file, get_file_state, list_all_tracked_files,
     get_kv, set_kv, remove_file_record, get_file_by_remote_id,
     record_synced_folder
 )
+from m365_bridge.selection import get_rules, migrate_config, pending_backfill, done_backfill
 
 _sync_logger = None
 
@@ -102,6 +103,113 @@ def is_ignored_path(p: Path, excluded_folders: set, local_drive: Optional[Path] 
 def is_ignored_file(p: Path, excluded_folders: set, local_drive: Optional[Path] = None) -> bool:
     return is_ignored_path(p, excluded_folders, local_drive, is_dir=False)
 
+def _parse_remote_mtime(item: Dict[str, Any]) -> Optional[float]:
+    s = item.get("lastModifiedDateTime")
+    if not s:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def _conflict_path(target_path: Path) -> Path:
+    stamp = time.strftime("%Y-%m-%d %H%M")
+    return target_path.with_name(f"{target_path.stem} (conflicto nube {stamp}){target_path.suffix}")
+
+
+async def download_item(
+    client: httpx.AsyncClient,
+    item: Dict[str, Any],
+    rel_str: str,
+    local_drive: Path,
+    drive_endpoint: str,
+    max_bytes: int,
+    logger: logging.Logger,
+) -> str:
+    """Baja un archivo remoto si hace falta.
+
+    Devuelve "downloaded", "up_to_date", "too_big", "no_url", "conflict" o "error".
+    Si el archivo local tiene cambios que todavía no se subieron, NO se pisa: la versión de
+    la nube se guarda al lado como "nombre (conflicto nube ...).ext".
+    """
+    target_path = local_drive / rel_str
+    item_id = item.get("id")
+    size = item.get("size", 0)
+    if size > max_bytes:
+        return "too_big"
+
+    remote_mtime = _parse_remote_mtime(item)
+    conflict = False
+    if target_path.exists():
+        st = target_path.stat()
+        if st.st_size == size:
+            if remote_mtime is None:
+                return "up_to_date"
+            if st.st_mtime >= (remote_mtime - 2):
+                record_synced_file(
+                    rel_path=rel_str, local_mtime=st.st_mtime, local_size=st.st_size,
+                    remote_mtime=remote_mtime, remote_size=size, direction="down", remote_id=item_id,
+                )
+                return "up_to_date"
+        state = get_file_state(rel_str)
+        if state and state.get("local_size", -1) >= 0 and (
+            st.st_mtime > state["local_mtime"] + 2 or st.st_size != state["local_size"]
+        ):
+            conflict = True
+
+    download_url = item.get("@content.downloadUrl") or item.get("@microsoft.graph.downloadUrl")
+    if not download_url and item_id:
+        # El delta de SharePoint (/_api/v2.0) no trae @content.downloadUrl;
+        # el endpoint /content del item redirige a una URL de descarga válida.
+        download_url = f"{drive_endpoint}/items/{item_id}/content"
+    if not download_url:
+        logger.warning(f"Sin URL de descarga para {rel_str}; omitido")
+        return "no_url"
+
+    dest = _conflict_path(target_path) if conflict else target_path
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = dest.with_suffix(dest.suffix + ".tmp")
+    try:
+        async with client.stream("GET", download_url, follow_redirects=True) as d_resp:
+            if d_resp.status_code != 200:
+                logger.warning(f"Error HTTP {d_resp.status_code} al descargar {rel_str}")
+                return "error"
+            with open(temp_path, "wb") as f:
+                async for chunk in d_resp.aiter_bytes(chunk_size=1024 * 1024):
+                    f.write(chunk)
+        temp_path.replace(dest)
+        if remote_mtime is not None:
+            try:
+                os.utime(dest, (remote_mtime, remote_mtime))
+            except Exception:
+                pass
+    except Exception as err:
+        logger.error(f"Excepción al descargar {rel_str}: {err}")
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+        return "error"
+
+    if conflict:
+        logger.warning(
+            f"Conflicto en {rel_str}: el local tiene cambios sin subir; "
+            f"la versión de la nube quedó en {dest.name}"
+        )
+        return "conflict"
+
+    st = dest.stat()
+    record_synced_file(
+        rel_path=rel_str, local_mtime=st.st_mtime, local_size=st.st_size,
+        remote_mtime=remote_mtime or st.st_mtime, remote_size=size, direction="down", remote_id=item_id,
+    )
+    logger.info(f"Descargado: {rel_str}")
+    return "downloaded"
+
+
 async def sync_remote_changes_delta_httpx(
     client: httpx.AsyncClient,
     base_endpoint: str,
@@ -118,6 +226,7 @@ async def sync_remote_changes_delta_httpx(
     drive_endpoint = base_endpoint.rsplit("/root", 1)[0]
     skipped_no_url = 0
     scan_completed = False
+    rules = get_rules(cfg)
 
     saved_delta = get_kv("onedrive_delta_link")
     curr_url = saved_delta if saved_delta else f"{base_endpoint}/delta"
@@ -204,6 +313,10 @@ async def sync_remote_changes_delta_httpx(
             if is_initial_full_scan:
                 seen_remote_paths.add(rel_str)
 
+            # Carpetas desmarcadas en el panel de sync selectiva: ni se crean ni se bajan
+            if not rules.is_selected(rel_str if item.get("folder") else rel_dir):
+                continue
+
             # 2. Carpeta remota
             if item.get("folder"):
                 if is_ignored_path(target_path, excluded, local_drive, is_dir=True):
@@ -229,96 +342,15 @@ async def sync_remote_changes_delta_httpx(
                         except Exception:
                             pass
 
-            size = item.get("size", 0)
-            if size > max_mb:
-                continue
-
-            download_url = item.get("@content.downloadUrl") or item.get("@microsoft.graph.downloadUrl")
-            last_modified_str = item.get("lastModifiedDateTime")
-            
-            remote_mtime = None
-            if last_modified_str:
-                try:
-                    from datetime import datetime
-                    dt = datetime.fromisoformat(last_modified_str.replace("Z", "+00:00"))
-                    remote_mtime = dt.timestamp()
-                except Exception:
-                    pass
-
-            # Si el archivo local existe con mismo tamaño y fecha igual o más nueva, omitir
-            if target_path.exists():
-                st = target_path.stat()
-                if st.st_size == size:
-                    if remote_mtime is not None and st.st_mtime >= (remote_mtime - 2):
-                        record_synced_file(
-                            rel_path=rel_str,
-                            local_mtime=st.st_mtime,
-                            local_size=st.st_size,
-                            remote_mtime=remote_mtime,
-                            remote_size=size,
-                            direction="down",
-                            remote_id=item_id
-                        )
-                        continue
-                    elif remote_mtime is None:
-                        continue
-
-            if not download_url and item_id:
-                # El delta de SharePoint (/_api/v2.0) no siempre trae @content.downloadUrl;
-                # el endpoint /content del item redirige a una URL de descarga válida.
-                download_url = f"{drive_endpoint}/items/{item_id}/content"
-            if not download_url:
+            result = await download_item(
+                client, item, rel_str, local_drive, drive_endpoint, max_mb, logger
+            )
+            if result == "no_url":
                 skipped_no_url += 1
-                logger.warning(f"Delta: sin URL de descarga para {rel_str}; omitido")
-                continue
-
-            if progress_callback:
-                progress_callback(f"Descargando: {name}", len(downloaded_files))
-
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = target_path.with_suffix(target_path.suffix + ".tmp")
-
-            try:
-                async with client.stream("GET", download_url, follow_redirects=True) as d_resp:
-                    if d_resp.status_code == 200:
-                        with open(temp_path, "wb") as f:
-                            async for chunk in d_resp.aiter_bytes(chunk_size=1024 * 1024):
-                                f.write(chunk)
-                        temp_path.replace(target_path)
-                        if remote_mtime is not None:
-                            try:
-                                os.utime(target_path, (remote_mtime, remote_mtime))
-                            except Exception:
-                                pass
-
-                        st = target_path.stat()
-                        record_synced_file(
-                            rel_path=rel_str,
-                            local_mtime=st.st_mtime,
-                            local_size=st.st_size,
-                            remote_mtime=remote_mtime or st.st_mtime,
-                            remote_size=size,
-                            direction="down",
-                            remote_id=item_id
-                        )
-                        downloaded_files.append(rel_str)
-                        logger.info(f"Descargado: {rel_str}")
-                        if progress_callback:
-                            progress_callback(f"Guardado: {name}", len(downloaded_files))
-                    else:
-                        logger.warning(f"Error HTTP {d_resp.status_code} al descargar {rel_str}")
-                        if temp_path.exists():
-                            temp_path.unlink()
-            except Exception as err:
-                logger.error(f"Excepción al descargar {rel_str}: {err}")
-                temp_p = target_path.with_suffix(target_path.suffix + ".tmp")
-                if temp_p.exists():
-                    try:
-                        temp_p.unlink()
-                    except Exception:
-                        pass
+            elif result in ("downloaded", "conflict"):
+                downloaded_files.append(rel_str)
                 if progress_callback:
-                    progress_callback(f"Error {name}: {err}", len(downloaded_files))
+                    progress_callback(f"Guardado: {name}", len(downloaded_files))
 
         # Avanzar paginación de Delta
         if body.get("@odata.nextLink"):
@@ -370,8 +402,12 @@ async def sync_remote_changes_delta_httpx(
 def scan_pending_deletions(local_drive: Path) -> List[str]:
     """Detecta archivos que estaban en la base de datos pero fueron borrados localmente en Linux."""
     tracked = list_all_tracked_files()
+    rules = get_rules()
     deleted = []
     for rel_path in tracked:
+        # Lo desmarcado en la sync selectiva no se recicla en la nube aunque falte en disco
+        if not rules.is_selected(rel_path):
+            continue
         local_path = local_drive / rel_path
         if not local_path.exists():
             deleted.append(rel_path)
@@ -427,6 +463,7 @@ def scan_pending_uploads(local_drive: Path, cfg: Dict[str, Any]) -> List[Path]:
     excluded = set(cfg.get("excluded_folders", []))
     all_excluded = DEFAULT_EXCLUDED_FOLDERS | excluded
     max_mb = cfg.get("max_file_size_mb", 200) * 1024 * 1024
+    rules = get_rules(cfg)
     pending = []
 
     if not local_drive.exists():
@@ -446,6 +483,7 @@ def scan_pending_uploads(local_drive: Path, cfg: Dict[str, Any]) -> List[Path]:
             if d not in all_excluded
             and not d.startswith(IGNORED_PREFIXES)
             and (depth + 1) <= MAX_FOLDER_DEPTH
+            and rules.is_selected(rel_root.parts + (d,))
         ]
 
         for fname in files:
@@ -606,12 +644,82 @@ async def upload_pending_files(
 
     return uploaded_files
 
+async def list_remote_children(
+    client: httpx.AsyncClient, drive_endpoint: str, rel_path: str
+) -> List[Dict[str, Any]]:
+    """Hijos directos de una carpeta de OneDrive ("" = raíz), con paginación."""
+    if rel_path:
+        url = f"{drive_endpoint}/root:/{quote(rel_path)}:/children"
+    else:
+        url = f"{drive_endpoint}/root/children"
+    url += "?$top=999"
+    items: List[Dict[str, Any]] = []
+    while url:
+        r = await client.get(url, timeout=40.0)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code} listando '{rel_path or '/'}': {r.text[:150]}")
+        body = r.json()
+        items.extend(body.get("value", []))
+        url = body.get("@odata.nextLink")
+    return items
+
+
+async def backfill_folder(
+    client: httpx.AsyncClient,
+    drive_endpoint: str,
+    local_drive: Path,
+    rel_path: str,
+    cfg: Dict[str, Any],
+    progress_callback: Optional[Callable[[str, int], None]] = None,
+) -> List[str]:
+    """Trae el contenido completo de una carpeta recién marcada (el delta es incremental
+    y no vuelve a reportar archivos viejos)."""
+    logger = get_sync_logger()
+    excluded = set(cfg.get("excluded_folders", []))
+    max_bytes = cfg.get("max_file_size_mb", 200) * 1024 * 1024
+    rules = get_rules(cfg)
+    downloaded: List[str] = []
+    stack = [rel_path]
+    while stack:
+        current = stack.pop()
+        try:
+            children = await list_remote_children(client, drive_endpoint, current)
+        except RuntimeError as e:
+            if "HTTP 404" in str(e) and current == rel_path:
+                logger.info(f"Backfill: '{rel_path}' no existe en la nube; se omite")
+                return downloaded
+            raise
+        for item in children:
+            name = item.get("name", "")
+            child_rel = f"{current}/{name}".strip("/")
+            target = local_drive / child_rel
+            if item.get("folder"):
+                if is_ignored_path(target, excluded, local_drive, is_dir=True) or not rules.is_selected(child_rel):
+                    continue
+                target.mkdir(parents=True, exist_ok=True)
+                record_synced_folder(child_rel, item.get("id"))
+                stack.append(child_rel)
+                continue
+            if is_ignored_path(target, excluded, local_drive, is_dir=False):
+                continue
+            if progress_callback:
+                progress_callback(f"Trayendo {rel_path}: {name}", len(downloaded))
+            res = await download_item(client, item, child_rel, local_drive, drive_endpoint, max_bytes, logger)
+            if res in ("downloaded", "conflict"):
+                downloaded.append(child_rel)
+    logger.info(f"Backfill de '{rel_path}': {len(downloaded)} archivos")
+    return downloaded
+
+
 async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = None) -> Dict[str, Any]:
     logger = get_sync_logger()
     logger.info("=== Iniciando ciclo de sincronización ===")
 
     with SyncLock():
         cfg = get_config()
+        if migrate_config(cfg):
+            save_config(cfg)
+            logger.info("Sync selectiva: configuración migrada (Recordings/Meetings/Temporales ahora son carpetas normales)")
         local_drive = Path(cfg["sync_folder"])
 
         if progress_callback:
@@ -678,6 +786,7 @@ async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = Non
                 base_url = sp_frame.url.split("/_layouts/")[0].rstrip("/")
                 tenant_path = urlparse(base_url).path.rstrip("/")
                 base_endpoint = f"{base_url}/_api/v2.0/me/drive/root"
+                set_kv("sharepoint_base_url", base_url)
 
                 # Extraer cookies de sesión de SharePoint
                 cookies = await context.cookies()
@@ -710,6 +819,17 @@ async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = Non
                     downloaded_files, deleted_locally_files = await sync_remote_changes_delta_httpx(
                         http_client, base_endpoint, local_drive, cfg, progress_callback
                     )
+
+                    # 1b. Carpetas recién marcadas en la sync selectiva: traer su contenido
+                    drive_endpoint = f"{base_url}/_api/v2.0/me/drive"
+                    for rel in pending_backfill():
+                        try:
+                            downloaded_files += await backfill_folder(
+                                http_client, drive_endpoint, local_drive, rel, cfg, progress_callback
+                            )
+                            done_backfill(rel)
+                        except Exception as e:
+                            logger.warning(f"Backfill de '{rel}' falló; se reintenta el próximo ciclo: {e}")
 
                     # 2. PASO 2: Detectar y enviar a la papelera remota archivos eliminados en Linux
                     pending_deletions = scan_pending_deletions(local_drive)
