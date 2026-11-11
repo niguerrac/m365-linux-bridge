@@ -466,6 +466,12 @@ class MainWindow(QMainWindow):
         self.btn_folder.clicked.connect(self.open_local_folder)
         toolbar.addWidget(self.btn_folder)
 
+        self.btn_selective = QPushButton("📁 Carpetas")
+        self.btn_selective.setToolTip("Elegir qué carpetas de OneDrive se sincronizan en este equipo")
+        self.btn_selective.setStyleSheet("padding: 5px 10px;")
+        self.btn_selective.clicked.connect(self.open_selective_sync)
+        toolbar.addWidget(self.btn_selective)
+
         toolbar.addSpacing(6)
 
         self.btn_mcp = QPushButton("🤖 MCP / IA")
@@ -543,6 +549,18 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self.cfg = get_config()
             self.setWindowTitle(f"M365 Linux Bridge - {self.cfg.get('institution_name', 'Office 365')}")
+
+    def open_selective_sync(self):
+        from m365_bridge.selective_dialog import SelectiveSyncDialog
+        dlg = SelectiveSyncDialog(self)
+        if dlg.exec() and dlg.result_summary is not None:
+            res = dlg.result_summary
+            if res["deleted_local"] or res["queued_download"]:
+                self.btn_status.setText(
+                    f"Carpetas: −{len(res['deleted_local'])} / +{len(res['queued_download'])}"
+                )
+            if self.btn_sync.isEnabled():
+                self.start_sync()
 
     def open_mcp_dialog(self):
         dlg = McpDialog(self)

@@ -16,7 +16,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "teams_url": "https://teams.microsoft.com/v2/",
     "auto_sync_interval_minutes": 60,
     "max_file_size_mb": 200,
-    "excluded_folders": ["Recordings", "Meetings", "Temporales"],
+    "excluded_folders": [],
     "remote_debugging_port": 9222,
     "ask_download_location": True,
     "downloads_folder": str(Path.home() / "Descargas")

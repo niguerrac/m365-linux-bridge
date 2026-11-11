@@ -6,6 +6,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from m365_bridge.config import get_config
 from m365_bridge.sync import is_ignored_path
+from m365_bridge.selection import get_rules
 
 class DebouncedSyncHandler(FileSystemEventHandler):
     def __init__(self, callback: Callable[[], None], debounce_seconds: float = 3.5):
@@ -23,6 +24,11 @@ class DebouncedSyncHandler(FileSystemEventHandler):
 
         if is_ignored_path(src_path, excluded, sync_folder, is_dir=event.is_directory):
             return
+        try:
+            if not get_rules(cfg).is_selected(src_path.relative_to(sync_folder).parts):
+                return
+        except ValueError:
+            pass
 
         with self.lock:
             if self.timer:
