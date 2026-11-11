@@ -18,21 +18,43 @@ Una solución integral, moderna y de código abierto para utilizar la suite de *
   * `m365_search_emails`: Búsqueda de correos por palabras clave, personas o fechas.
   * `m365_send_email`: Redacción y despacho directo de correos desde la cuenta institucional.
   * `m365_list_files`: Explorador de archivos y carpetas de OneDrive.
-* **⚡ Instalador de MCP en 1 Clic:** Botón directo en la barra de herramientas para registrar el servidor en **Claude Desktop**, **Google Antigravity (AGY)** y **OpenCode**.
+* **⚡ Instalador de MCP en 1 Clic:** Botón en Configuración para registrar el servidor en **Claude Desktop**, **Google Antigravity (AGY)** y **OpenCode**.
 * **📌 Icono de Bandeja del Sistema (Tray):** Soporte oficial para KDE Plasma (Wayland) y X11 con acciones rápidas de sincronización.
 
 ---
 
 ## 📦 Descarga e Instalación
 
-### Opción 1: AppImage Portable (Recomendada - Sin instalación)
-Compatible con cualquier distribución (Ubuntu, Debian, Fedora, Arch, CachyOS, openSUSE, etc.):
+### Opción 1: Instalador de una línea (Recomendada)
 
-1. Descarga el ejecutable desde la sección de **[Releases](https://github.com/niguerrac/m365-linux-bridge/releases)**:
-   ```bash
-   chmod +x M365-Linux-Bridge-x86_64.AppImage
-   ./M365-Linux-Bridge-x86_64.AppImage
-   ```
+```bash
+curl -fsSL https://raw.githubusercontent.com/niguerrac/m365-linux-bridge/main/install.sh | bash
+```
+
+* Instala el **último release** en `~/.local/share/m365-linux-bridge` (entorno con `uv`, dependencias incluidas).
+* Crea el acceso **M365 Linux Bridge** con su icono en el menú de aplicaciones y deja la **bandeja** (sync automático) en el inicio de sesión.
+* **Para actualizar, vuelve a ejecutar el mismo comando.** La app también avisa al abrir cuando hay una versión nueva, y en **Configuración → Buscar actualizaciones** muestra la versión actual y actualiza con un clic.
+
+Variables opcionales: `M365_INSTALL_DIR` (otra carpeta), `M365_VERSION=v1.0.4` (fijar una versión).
+
+---
+
+### Requisitos del sistema
+
+* **git** y **Chromium** (o Chrome/Brave): Chromium se usa para el inicio de sesión interactivo de Microsoft.
+  * Arch / CachyOS: `sudo pacman -S git chromium` · Debian / Ubuntu: `sudo apt install git chromium` · Fedora: `sudo dnf install git chromium`
+* Solo para el AppImage: **FUSE 2** (ver abajo).
+
+---
+
+### Opción 2: AppImage portable (sin instalación)
+
+Descarga `M365-Linux-Bridge-x86_64.AppImage` desde **[Releases](https://github.com/niguerrac/m365-linux-bridge/releases)**:
+```bash
+chmod +x M365-Linux-Bridge-x86_64.AppImage
+./M365-Linux-Bridge-x86_64.AppImage
+```
+El AppImage trae la ventana principal (sin bandeja ni sync automático) y se actualiza solo desde **Configuración → Buscar actualizaciones**. No se agrega al menú por sí mismo: usa Gear Lever o AppImageLauncher si lo quieres ahí.
 
 > **⚠️ Si ves `dlopen(): error loading libfuse.so.2`:** los AppImage necesitan FUSE 2, que muchas distros ya no instalan por defecto (Arch, CachyOS, Fedora, Ubuntu 22.04+). Soluciones:
 >
@@ -46,15 +68,7 @@ Compatible con cualquier distribución (Ubuntu, Debian, Fedora, Arch, CachyOS, o
 
 ---
 
-### Requisitos del sistema
-
-* **Chromium** (o Chrome/Brave) instalado: se usa para el inicio de sesión interactivo de Microsoft.
-  * Arch / CachyOS: `sudo pacman -S chromium` · Debian / Ubuntu: `sudo apt install chromium` · Fedora: `sudo dnf install chromium`
-* Solo para el AppImage: **FUSE 2** (ver el aviso de arriba).
-
----
-
-### Opción 2: Instalación desde el Código Fuente
+### Opción 3: Desarrollo (clon de git)
 
 ```bash
 git clone https://github.com/niguerrac/m365-linux-bridge.git
@@ -62,11 +76,12 @@ cd m365-linux-bridge
 ./install.sh
 ```
 
-El script `install.sh`:
-* Crea automáticamente el entorno virtual con `uv`.
-* Instala las dependencias necesarias (`PyQt6`, `PyQt6-WebEngine`, `playwright`, `mcp`, `httpx`, `watchdog`).
-* Avisa si no encuentra Chromium.
-* Crea los accesos directos en el menú de aplicaciones de tu escritorio (`M365 Linux Bridge`).
+Instala ese clon tal cual. El botón **Buscar actualizaciones** hace `git pull --ff-only` sobre la rama actual (se niega si hay cambios sin commitear).
+
+### Publicar un release
+
+1. Subir `__version__` en `m365_bridge/__init__.py`.
+2. `git tag vX.Y.Z && git push origin vX.Y.Z` — el CI verifica que el tag coincida con `__version__`, arma el AppImage y publica el release. Las instalaciones existentes lo ven en su próximo chequeo.
 
 ---
 
