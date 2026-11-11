@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -23,7 +24,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from m365_bridge import __version__
 
 REPO = "niguerrac/m365-linux-bridge"
-LATEST_API = f"https://api.github.com/repos/{REPO}/releases/latest"
+RELEASES_LATEST = f"https://github.com/{REPO}/releases/latest"
 INSTALL_SH_URL = f"https://raw.githubusercontent.com/{REPO}/main/install.sh"
 APPIMAGE_ASSET = "M365-Linux-Bridge-x86_64.AppImage"
 INSTALL_MARKER = ".m365-install"
@@ -52,19 +53,23 @@ MODE_LABEL = {"appimage": "AppImage", "installed": "instalada", "dev": "copia de
 
 
 def fetch_latest_release(timeout: float = 8.0) -> Dict[str, Any]:
+    """Último release leyendo la redirección de github.com/<repo>/releases/latest
+    (no usa la API, que limita a 60 consultas por hora por IP: en una red institucional
+    con NAT compartido se agota enseguida)."""
     req = urllib.request.Request(
-        LATEST_API,
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "m365-linux-bridge-updater"},
+        RELEASES_LATEST, method="HEAD", headers={"User-Agent": "m365-linux-bridge-updater"}
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        data = json.load(r)
-    asset = next((a for a in data.get("assets", []) if a.get("name") == APPIMAGE_ASSET), None)
+        final_url = r.geturl()
+    m = re.search(r"/releases/tag/([^/?#]+)", final_url)
+    if not m:
+        raise RuntimeError(f"No se pudo leer el último release ({final_url})")
+    tag = urllib.parse.unquote(m.group(1))
     return {
-        "version": data.get("tag_name", "").lstrip("v"),
-        "tag": data.get("tag_name", ""),
-        "url": data.get("html_url", ""),
-        "notes": data.get("body") or "",
-        "appimage_url": asset.get("browser_download_url") if asset else None,
+        "version": tag.lstrip("v"),
+        "tag": tag,
+        "url": final_url,
+        "appimage_url": f"https://github.com/{REPO}/releases/download/{tag}/{APPIMAGE_ASSET}",
     }
 
 
