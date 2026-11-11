@@ -349,6 +349,17 @@ class SettingsDialog(QDialog):
         self.btn_reauth.clicked.connect(self.reauthenticate)
         layout.addRow("Sesión de Fondo (Playwright/MCP):", self.btn_reauth)
 
+        self.btn_selective = QPushButton("📁 Elegir carpetas…")
+        self.btn_selective.setStyleSheet("padding: 6px 10px;")
+        self.btn_selective.setToolTip("Elegir qué carpetas de OneDrive se sincronizan en este equipo")
+        self.btn_selective.clicked.connect(self.open_selective_sync)
+        layout.addRow("Carpetas sincronizadas:", self.btn_selective)
+
+        self.btn_mcp = QPushButton("🤖 MCP / IA…")
+        self.btn_mcp.setStyleSheet("background-color: #107C41; color: white; font-weight: bold; padding: 6px 10px; border-radius: 4px;")
+        self.btn_mcp.clicked.connect(self.open_mcp_dialog)
+        layout.addRow("Integración con IA:", self.btn_mcp)
+
         btns = QHBoxLayout()
         btn_save = QPushButton("Guardar")
         btn_save.clicked.connect(self.save)
@@ -378,7 +389,20 @@ class SettingsDialog(QDialog):
         if d:
             self.down_input.setText(d)
 
+    def open_selective_sync(self):
+        main = self.parent()
+        if main is not None and hasattr(main, "open_selective_sync"):
+            main.open_selective_sync()
+        else:
+            from m365_bridge.selective_dialog import SelectiveSyncDialog
+            SelectiveSyncDialog(self).exec()
+
+    def open_mcp_dialog(self):
+        McpDialog(self).exec()
+
     def save(self):
+        # Releer: el panel de carpetas pudo guardar cambios mientras este diálogo estaba abierto
+        self.cfg = get_config()
         self.cfg["institution_name"] = self.inst_input.text().strip()
         self.cfg["sync_folder"] = self.folder_input.text().strip()
         self.cfg["downloads_folder"] = self.down_input.text().strip()
@@ -466,18 +490,6 @@ class MainWindow(QMainWindow):
         self.btn_folder.clicked.connect(self.open_local_folder)
         toolbar.addWidget(self.btn_folder)
 
-        self.btn_selective = QPushButton("📁 Carpetas")
-        self.btn_selective.setToolTip("Elegir qué carpetas de OneDrive se sincronizan en este equipo")
-        self.btn_selective.setStyleSheet("padding: 5px 10px;")
-        self.btn_selective.clicked.connect(self.open_selective_sync)
-        toolbar.addWidget(self.btn_selective)
-
-        toolbar.addSpacing(6)
-
-        self.btn_mcp = QPushButton("🤖 MCP / IA")
-        self.btn_mcp.setStyleSheet("background-color: #107C41; color: white; font-weight: bold; padding: 5px 12px; border-radius: 4px;")
-        self.btn_mcp.clicked.connect(self.open_mcp_dialog)
-        toolbar.addWidget(self.btn_mcp)
 
         toolbar.addStretch()
 
