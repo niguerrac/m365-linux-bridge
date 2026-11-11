@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QListWidget, QListWidgetItem, QCheckBox
 )
 from PyQt6.QtGui import QIcon, QDesktopServices
-from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QStandardPaths
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QStandardPaths, QTimer
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import (
     QWebEngineProfile, QWebEnginePage, QWebEngineDownloadRequest,
@@ -26,6 +26,7 @@ from PyQt6.QtWebEngineCore import (
 )
 
 from m365_bridge.config import get_config, save_config, DATA_DIR
+from m365_bridge import __version__
 from m365_bridge.sync import run_sync
 from m365_bridge.browser import launch_interactive_login
 from m365_bridge.mcp_installer import install_claude_desktop, install_antigravity, install_opencode
@@ -349,6 +350,15 @@ class SettingsDialog(QDialog):
         self.btn_reauth.clicked.connect(self.reauthenticate)
         layout.addRow("Sesión de Fondo (Playwright/MCP):", self.btn_reauth)
 
+        from m365_bridge.updater import MODE_LABEL, install_mode
+        ver_row = QHBoxLayout()
+        self.version_label = QLabel(f"v{__version__} · {MODE_LABEL[install_mode()]}")
+        self.btn_check_update = QPushButton("Buscar actualizaciones")
+        self.btn_check_update.clicked.connect(self.check_updates)
+        ver_row.addWidget(self.version_label, 1)
+        ver_row.addWidget(self.btn_check_update)
+        layout.addRow("Versión:", ver_row)
+
         self.btn_selective = QPushButton("📁 Elegir carpetas…")
         self.btn_selective.setStyleSheet("padding: 6px 10px;")
         self.btn_selective.setToolTip("Elegir qué carpetas de OneDrive se sincronizan en este equipo")
@@ -400,6 +410,36 @@ class SettingsDialog(QDialog):
     def open_mcp_dialog(self):
         McpDialog(self).exec()
 
+    def check_updates(self):
+        from m365_bridge.update_ui import UpdateCheckWorker, start_update
+        self.btn_check_update.setEnabled(False)
+        self.btn_check_update.setText("Buscando…")
+
+        def done():
+            self.btn_check_update.setEnabled(True)
+            self.btn_check_update.setText("Buscar actualizaciones")
+
+        def on_result(info):
+            done()
+            if not info:
+                self.version_label.setText(self.version_label.text().split("  ")[0] + "  ✓ al día")
+                return
+            ok = QMessageBox.question(
+                self, "Actualización disponible",
+                f"Hay una versión nueva: v{info['version']} (tienes v{__version__}).\n\n¿Actualizar ahora?",
+            )
+            if ok == QMessageBox.StandardButton.Yes:
+                start_update(info, self)
+
+        def on_error(msg):
+            done()
+            QMessageBox.warning(self, "Actualizaciones", f"No se pudo consultar GitHub:\n{msg}")
+
+        self._upd_worker = UpdateCheckWorker(use_cache=False, parent=self)
+        self._upd_worker.result.connect(on_result)
+        self._upd_worker.error.connect(on_error)
+        self._upd_worker.start()
+
     def save(self):
         # Releer: el panel de carpetas pudo guardar cambios mientras este diálogo estaba abierto
         self.cfg = get_config()
@@ -415,7 +455,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.cfg = get_config()
-        self.setWindowTitle(f"M365 Linux Bridge - {self.cfg.get('institution_name', 'Office 365')}")
+        self.setWindowTitle(f"M365 Linux Bridge v{__version__} - {self.cfg.get('institution_name', 'Office 365')}")
         self.resize(1200, 800)
         if ICON_PATH.exists():
             self.setWindowIcon(QIcon(str(ICON_PATH)))
@@ -533,6 +573,16 @@ class MainWindow(QMainWindow):
         self.show_outlook()
         self.worker = None
 
+        # Aviso de versión nueva al abrir (no bloquea; sin red no dice nada)
+        from m365_bridge.update_ui import check_on_startup
+        QTimer.singleShot(3000, lambda: check_on_startup(self))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        toast = getattr(self, "_update_toast", None)
+        if toast is not None and toast.isVisible():
+            toast.reposition()
+
     def show_outlook(self):
         url = self.cfg.get("outlook_url", "https://outlook.cloud.microsoft/mail/")
         self.webview.setUrl(QUrl(url))
@@ -560,7 +610,7 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self)
         if dlg.exec():
             self.cfg = get_config()
-            self.setWindowTitle(f"M365 Linux Bridge - {self.cfg.get('institution_name', 'Office 365')}")
+            self.setWindowTitle(f"M365 Linux Bridge v{__version__} - {self.cfg.get('institution_name', 'Office 365')}")
 
     def open_selective_sync(self):
         from m365_bridge.selective_dialog import SelectiveSyncDialog
