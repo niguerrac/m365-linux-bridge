@@ -301,9 +301,7 @@ class M365WebPage(QWebEnginePage):
             QWebEnginePage.PermissionPolicy.PermissionGrantedByUser
         )
 
-    def createWindow(self, window_type):
-        # Permite que enlaces con target="_blank", window.open o solicitudes de descarga se ejecuten en la misma página
-        return self
+
 
 
 def open_in_file_manager(target_path: Path):
@@ -610,14 +608,18 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(toolbar_container)
 
         # --- NAVEGADOR EMBEBIDO (WEBVIEW) OCUPA TODO EL ESPACIO RESTANTE ---
+        self._last_browse_url = None
         self.webview = QWebEngineView(self)
         self.web_page = M365WebPage(self.web_profile, self.webview)
         if hasattr(self.web_page, "fullScreenRequested"):
             self.web_page.fullScreenRequested.connect(lambda req: req.accept())
         if hasattr(self.web_page, "windowCloseRequested"):
             self.web_page.windowCloseRequested.connect(self.on_window_close_requested)
+        if hasattr(self.web_page, "newWindowRequested"):
+            self.web_page.newWindowRequested.connect(self.on_new_window_requested)
         self.webview.setPage(self.web_page)
         self.webview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.webview.urlChanged.connect(self.on_url_changed)
         main_layout.addWidget(self.webview, 1)
 
         self.show_outlook()
@@ -645,15 +647,39 @@ class MainWindow(QMainWindow):
         url = self.cfg.get("teams_url", "https://teams.microsoft.com/v2/")
         self.webview.setUrl(QUrl(url))
 
+    def on_new_window_requested(self, request):
+        url = request.requestedUrl()
+        if url.isValid() and url.toString() not in ("", "about:blank"):
+            self.webview.setUrl(url)
+
+    def on_url_changed(self, url: QUrl):
+        u = url.toString()
+        is_editor = any(m in u for m in (":w:/r/", ":x:/r/", ":p:/r/", "WopiFrame", "Doc.aspx"))
+        if not is_editor and any(m in u for m in ("sharepoint.com", "office.com", "onedrive.live.com", "onedrive.com")):
+            self._last_browse_url = u
+
     def go_back(self):
-        self.webview.back()
+        hist = self.webview.history()
+        if hist.canGoBack():
+            back_item = hist.backItem()
+            if back_item:
+                back_u = back_item.url().toString()
+                if any(m in back_u for m in (":w:/r/", ":x:/r/", ":p:/r/")):
+                    items = hist.backItems(2)
+                    if len(items) >= 2:
+                        hist.goToItem(items[0])
+                        return
+            self.webview.back()
+        elif getattr(self, "_last_browse_url", None):
+            self.webview.setUrl(QUrl(self._last_browse_url))
+        else:
+            self.show_onedrive()
 
     def reload_page(self):
         self.webview.reload()
 
     def on_window_close_requested(self):
-        if self.webview.history().canGoBack():
-            self.webview.back()
+        self.go_back()
 
     def open_local_folder(self):
         path = self.cfg.get("sync_folder", str(Path.home() / "OneDrive"))
