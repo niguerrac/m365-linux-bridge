@@ -375,6 +375,12 @@ class SettingsDialog(QDialog):
         self.max_mb_input.setSuffix(" MB")
         layout.addRow("Límite tamaño descarga automática:", self.max_mb_input)
 
+        self.interval_input = QSpinBox()
+        self.interval_input.setRange(0, 1440)
+        self.interval_input.setValue(self.cfg.get("auto_sync_interval_minutes", 60))
+        self.interval_input.setSuffix(" min (0 = desactivado)")
+        layout.addRow("Intervalo sincro periódica:", self.interval_input)
+
         self.btn_reauth = QPushButton("🔑 Reautenticar Motor en Navegador")
         self.btn_reauth.setStyleSheet("padding: 6px 10px; font-weight: bold;")
         self.btn_reauth.setToolTip("Abre una ventana de Chromium para ingresar credenciales o 2FA si la sesión expiró.")
@@ -479,6 +485,7 @@ class SettingsDialog(QDialog):
         self.cfg["downloads_folder"] = self.down_input.text().strip()
         self.cfg["ask_download_location"] = self.ask_down_chk.isChecked()
         self.cfg["max_file_size_mb"] = self.max_mb_input.value()
+        self.cfg["auto_sync_interval_minutes"] = self.interval_input.value()
         save_config(self.cfg)
         self.accept()
 
@@ -625,6 +632,11 @@ class MainWindow(QMainWindow):
         self.show_outlook()
         self.worker = None
 
+        # Temporizador de sincronización periódica en segundo plano
+        self.auto_sync_timer = QTimer(self)
+        self.auto_sync_timer.timeout.connect(self.trigger_auto_sync)
+        self.update_auto_sync_timer()
+
         # Aviso de versión nueva al abrir (no bloquea; sin red no dice nada)
         from m365_bridge.update_ui import check_on_startup
         QTimer.singleShot(3000, lambda: check_on_startup(self))
@@ -685,11 +697,23 @@ class MainWindow(QMainWindow):
         path = self.cfg.get("sync_folder", str(Path.home() / "OneDrive"))
         open_in_file_manager(Path(path))
 
+    def update_auto_sync_timer(self):
+        interval_min = self.cfg.get("auto_sync_interval_minutes", 60)
+        if interval_min > 0:
+            self.auto_sync_timer.start(interval_min * 60 * 1000)
+        else:
+            self.auto_sync_timer.stop()
+
+    def trigger_auto_sync(self):
+        if (self.worker is None or not self.worker.isRunning()) and self.btn_sync.isEnabled():
+            self.start_sync()
+
     def open_settings(self):
         dlg = SettingsDialog(self)
         if dlg.exec():
             self.cfg = get_config()
             self.setWindowTitle(f"M365 Linux Bridge v{__version__} - {self.cfg.get('institution_name', 'Office 365')}")
+            self.update_auto_sync_timer()
 
     def open_selective_sync(self):
         from m365_bridge.selective_dialog import SelectiveSyncDialog
@@ -883,6 +907,9 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setDesktopFileName("m365-linux-bridge")
+    if ICON_PATH.exists():
+        app.setWindowIcon(QIcon(str(ICON_PATH)))
     win = MainWindow()
     win.show()
     sys.exit(app.exec())

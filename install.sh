@@ -83,11 +83,11 @@ VERSION="$("$DIR/.venv/bin/python" -c 'import sys; sys.path.insert(0, "."); from
 if [ "${M365_NO_DESKTOP:-0}" != "1" ]; then
     APPLICATIONS_DIR="$HOME/.local/share/applications"
     AUTOSTART_DIR="$HOME/.config/autostart"
-    ICON_DIR="$HOME/.local/share/icons/hicolor/64x64/apps"
-    mkdir -p "$APPLICATIONS_DIR" "$AUTOSTART_DIR" "$ICON_DIR"
-    # Icono registrado en el tema: Icon=<nombre> funciona en cualquier menú/lanzador
-    # (con ruta absoluta algunos solo muestran el genérico)
-    cp "$DIR/icons/m365.png" "$ICON_DIR/m365-linux-bridge.png"
+    mkdir -p "$APPLICATIONS_DIR" "$AUTOSTART_DIR"
+    for sz in 512x512 256x256 128x128 64x64 48x48 32x32; do
+        mkdir -p "$HOME/.local/share/icons/hicolor/$sz/apps"
+        cp "$DIR/icons/m365.png" "$HOME/.local/share/icons/hicolor/$sz/apps/m365-linux-bridge.png"
+    done
     command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 
     cat << EOF > "$APPLICATIONS_DIR/m365-linux-bridge.desktop"
@@ -99,6 +99,7 @@ Exec=$DIR/.venv/bin/python $DIR/m365_bridge/gui.py
 Icon=m365-linux-bridge
 Terminal=false
 Categories=Office;Network;Email;FileManager;
+StartupWMClass=m365-linux-bridge
 EOF
 
     cat << EOF > "$AUTOSTART_DIR/m365-bridge-tray.desktop"
