@@ -1,4 +1,4 @@
-import sys, os
+import sys, os, re, shutil, subprocess
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Debe ir antes de importar PyQt6 (QtWebEngine lee estas variables al iniciar).
@@ -305,6 +305,39 @@ class M365WebPage(QWebEnginePage):
         # Permite que enlaces con target="_blank", window.open o solicitudes de descarga se ejecuten en la misma página
         return self
 
+
+def open_in_file_manager(target_path: Path):
+    """Abre el gestor de archivos seleccionando el archivo si es posible, o abriendo la carpeta contenedora."""
+    try:
+        p = Path(target_path).resolve()
+        target_dir = str(p.parent if p.is_file() or not p.exists() else p)
+        file_path = str(p) if p.exists() and not p.is_dir() else None
+
+        # 1. Intentar con dolphin --select (gestor nativo en KDE / CachyOS)
+        if file_path and shutil.which("dolphin"):
+            subprocess.Popen(["dolphin", "--select", file_path])
+            return
+
+        # 2. Intentar con dbus FileManager1 ShowItems (estándar freedesktop)
+        if file_path and shutil.which("busctl"):
+            res = subprocess.run([
+                "busctl", "--user", "call", "org.freedesktop.FileManager1",
+                "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1",
+                "ShowItems", "as", "1", f"file://{file_path}", ""
+            ], capture_output=True, timeout=1)
+            if res.returncode == 0:
+                return
+
+        # 3. Abrir la carpeta directamente con dolphin si existe
+        if shutil.which("dolphin"):
+            subprocess.Popen(["dolphin", target_dir])
+            return
+
+        # 4. Fallback a xdg-open
+        subprocess.Popen(["xdg-open", target_dir])
+    except Exception as e:
+        print(f"Error abriendo gestor de archivos: {e}")
+
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -469,12 +502,25 @@ class MainWindow(QMainWindow):
         self.web_profile.downloadRequested.connect(self.on_download_requested)
         self._active_downloads = []
 
-        # Habilitar soporte multimedia, WebRTC y captura de pantalla para Teams
+        # Limpiar QtWebEngine del User-Agent para que Microsoft 365, SharePoint y OneDrive
+        # reconozcan el navegador como Google Chrome estándar y permitan la previsualización / edición web
+        # de documentos (Word, Excel, PowerPoint, imágenes, PDFs) en la misma ventana sin forzar descargas.
+        orig_ua = self.web_profile.httpUserAgent()
+        clean_ua = re.sub(r'QtWebEngine/\S+\s*', '', orig_ua)
+        self.web_profile.setHttpUserAgent(clean_ua)
+
+        # Habilitar soporte multimedia, WebRTC, plugins y previsualizaciones web completas
         web_settings = self.web_profile.settings()
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.ScreenCaptureEnabled, True)
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.WebRTCPublicInterfacesOnly, False)
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, True)
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.PdfViewerEnabled, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.AllowWindowActivationFromJavaScript, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -566,6 +612,10 @@ class MainWindow(QMainWindow):
         # --- NAVEGADOR EMBEBIDO (WEBVIEW) OCUPA TODO EL ESPACIO RESTANTE ---
         self.webview = QWebEngineView(self)
         self.web_page = M365WebPage(self.web_profile, self.webview)
+        if hasattr(self.web_page, "fullScreenRequested"):
+            self.web_page.fullScreenRequested.connect(lambda req: req.accept())
+        if hasattr(self.web_page, "windowCloseRequested"):
+            self.web_page.windowCloseRequested.connect(self.on_window_close_requested)
         self.webview.setPage(self.web_page)
         self.webview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         main_layout.addWidget(self.webview, 1)
@@ -601,10 +651,13 @@ class MainWindow(QMainWindow):
     def reload_page(self):
         self.webview.reload()
 
+    def on_window_close_requested(self):
+        if self.webview.history().canGoBack():
+            self.webview.back()
+
     def open_local_folder(self):
-        import subprocess
         path = self.cfg.get("sync_folder", str(Path.home() / "OneDrive"))
-        subprocess.Popen(["xdg-open", path])
+        open_in_file_manager(Path(path))
 
     def open_settings(self):
         dlg = SettingsDialog(self)
@@ -776,8 +829,7 @@ class MainWindow(QMainWindow):
                     QMessageBox.StandardButton.Yes
                 )
                 if reply == QMessageBox.StandardButton.Yes:
-                    import subprocess
-                    subprocess.Popen(["xdg-open", str(target_dir)])
+                    open_in_file_manager(final_path)
 
             elif state == QWebEngineDownloadRequest.DownloadState.DownloadInterrupted:
                 self.progress_bar.setVisible(False)
