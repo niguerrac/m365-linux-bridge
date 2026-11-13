@@ -18,7 +18,7 @@ Una solución integral, moderna y de código abierto para utilizar la suite de *
   * `m365_search_emails`: Búsqueda de correos por palabras clave, personas o fechas.
   * `m365_send_email`: Redacción y despacho directo de correos desde la cuenta institucional.
   * `m365_list_files`: Explorador de archivos y carpetas de OneDrive.
-* **⚡ Instalador de MCP en 1 Clic:** Botón en Configuración para registrar el servidor en **Claude Desktop**, **Google Antigravity (AGY)** y **OpenCode**.
+* **⚡ Instalador de MCP en 1 Clic:** Botón en Configuración para registrar el servidor en **Claude Desktop**, **Google Antigravity (AGY)**, **OpenCode** y **Codex**.
 * **📌 Icono de Bandeja del Sistema (Tray):** Soporte oficial para KDE Plasma (Wayland) y X11 con acciones rápidas de sincronización.
 
 ---
@@ -151,3 +151,9 @@ Puedes hacer clic en el botón verde **`🤖 MCP / IA`** dentro de la barra de l
 
 ## 📄 Licencia
 Este proyecto está bajo la Licencia **MIT**. Consulta el archivo `LICENSE` para más detalles.
+
+---
+
+## 🍎 ¿Usas macOS? (Guía para Agentes de IA)
+
+Este repositorio está optimizado nativamente para **Linux**. Si tu equipo corre **macOS** y deseas que tu agente de IA adapte el entorno en dos minutos (Finder, Chrome bundles y Codex), revisa la [Guía técnica de Adaptación a macOS](docs/mac-port.md).

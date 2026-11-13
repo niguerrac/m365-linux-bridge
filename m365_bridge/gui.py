@@ -29,7 +29,7 @@ from m365_bridge.config import get_config, save_config, DATA_DIR
 from m365_bridge import __version__
 from m365_bridge.sync import run_sync
 from m365_bridge.browser import launch_interactive_login
-from m365_bridge.mcp_installer import install_claude_desktop, install_antigravity, install_opencode
+from m365_bridge.mcp_installer import install_claude_desktop, install_antigravity, install_opencode, install_codex
 
 ICON_PATH = Path(__file__).parent.parent / "icons" / "m365.png"
 
@@ -233,6 +233,11 @@ class McpDialog(QDialog):
         self.btn_opencode.clicked.connect(self.do_install_opencode)
         btns_layout.addWidget(self.btn_opencode)
 
+        self.btn_codex = QPushButton(" Instalar en Codex")
+        self.btn_codex.setStyleSheet("padding: 8px 12px; font-weight: bold;")
+        self.btn_codex.clicked.connect(self.do_install_codex)
+        btns_layout.addWidget(self.btn_codex)
+
         layout.addLayout(btns_layout)
 
         layout.addSpacing(15)
@@ -277,6 +282,13 @@ class McpDialog(QDialog):
             QMessageBox.information(self, "OpenCode", f"¡Servidor MCP registrado en OpenCode con éxito!\n\nArchivo: {path}")
         else:
             QMessageBox.warning(self, "OpenCode", f"No se pudo registrar: {path}")
+
+    def do_install_codex(self):
+        ok, path = install_codex()
+        if ok:
+            QMessageBox.information(self, "Codex", f"¡Servidor MCP registrado en Codex con éxito!\\n\\nArchivo: {path}")
+        else:
+            QMessageBox.warning(self, "Codex", f"No se pudo registrar en Codex: {path}")
 
 class M365WebPage(QWebEnginePage):
     """Página WebEngine personalizada para soportar enlaces emergentes, permisos de medios (Teams) y descargas."""
