@@ -1,13 +1,15 @@
 import sqlite3
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-from m365_bridge.config import DATA_DIR
+from m365_bridge.config import DATA_DIR, db_path
 
-DB_PATH = DATA_DIR / "sync_state.db"
+DB_PATH = DATA_DIR / "sync_state.db"  # DB de la cuenta legacy (compat)
 
-def get_db():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
+def get_db(account: Optional[str] = None):
+    """Abre la DB de estado de la cuenta (la activa si no se indica)."""
+    path = db_path(account)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     with conn:
         conn.execute("""
@@ -37,16 +39,16 @@ def get_db():
         """)
     return conn
 
-def get_kv(key: str) -> Optional[str]:
-    conn = get_db()
+def get_kv(key: str, account: Optional[str] = None) -> Optional[str]:
+    conn = get_db(account)
     cur = conn.cursor()
     cur.execute("SELECT value FROM kv_store WHERE key = ?", (key,))
     row = cur.fetchone()
     conn.close()
     return row["value"] if row else None
 
-def set_kv(key: str, value: str):
-    conn = get_db()
+def set_kv(key: str, value: str, account: Optional[str] = None):
+    conn = get_db(account)
     with conn:
         conn.execute("""
             INSERT INTO kv_store (key, value) VALUES (?, ?)

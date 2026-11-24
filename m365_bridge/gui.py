@@ -7,7 +7,13 @@ apply_render_fallback()
 
 # Expone el navegador embebido por CDP (solo localhost) para que el sync reutilice su sesion
 # en vez de abrir un segundo Chromium que pida login otra vez.
-from m365_bridge.config import get_config as _get_config
+from m365_bridge.config import get_config as _get_config, set_active_account as _set_active_account
+# Cuenta de esta ventana: --account <id> (o M365_ACCOUNT, o la cuenta por defecto).
+if "--account" in sys.argv:
+    _i = sys.argv.index("--account")
+    if _i + 1 < len(sys.argv):
+        _set_active_account(sys.argv[_i + 1])
+        del sys.argv[_i:_i + 2]
 os.environ.setdefault("QTWEBENGINE_REMOTE_DEBUGGING", str(_get_config().get("remote_debugging_port", 9222)))
 
 from pathlib import Path
@@ -25,7 +31,10 @@ from PyQt6.QtWebEngineCore import (
     QWebEnginePermission, QWebEngineSettings
 )
 
-from m365_bridge.config import get_config, save_config, DATA_DIR
+from m365_bridge.config import (
+    get_config, save_config, DATA_DIR, get_active_account_id, webengine_profile_dir, log_path,
+    list_accounts as cfgmod_list_accounts,
+)
 from m365_bridge import __version__
 from m365_bridge.sync import run_sync
 from m365_bridge.browser import launch_interactive_login
@@ -38,17 +47,21 @@ class SyncWorker(QThread):
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
+    def __init__(self, account=None):
+        super().__init__()
+        self.account = account or get_active_account_id()
+
     def run(self):
         import asyncio
         def on_progress(status_text: str, current_count: int):
             self.progress.emit(status_text, current_count)
 
         try:
-            res = asyncio.run(run_sync(progress_callback=on_progress))
+            res = asyncio.run(run_sync(progress_callback=on_progress, account=self.account))
             self.finished.emit(res)
         except Exception as e:
             from m365_bridge.sync import get_sync_logger
-            get_sync_logger().exception("Fallo el ciclo de sincronizacion")
+            get_sync_logger(self.account).exception("Fallo el ciclo de sincronizacion")
             self.error.emit(f"{type(e).__name__}: {e}")
 
 class SyncDetailsDialog(QDialog):
@@ -135,7 +148,7 @@ class SyncDetailsDialog(QDialog):
             log_box = QTextEdit()
             log_box.setReadOnly(True)
             log_box.setStyleSheet("font-family: monospace; font-size: 11px; background-color: #fdfdfd; padding: 6px;")
-            log_file = DATA_DIR / "sync.log"
+            log_file = log_path()
             if log_file.exists():
                 try:
                     lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -153,7 +166,7 @@ class SyncDetailsDialog(QDialog):
             layout.addWidget(info)
 
             # Mostrar log disponible aunque no haya sync en esta sesión
-            log_file = DATA_DIR / "sync.log"
+            log_file = log_path()
             if log_file.exists():
                 lbl = QLabel("Último registro de eventos (sync.log):")
                 lbl.setStyleSheet("font-weight: bold; font-size: 12px; margin-top: 6px;")
@@ -172,7 +185,7 @@ class SyncDetailsDialog(QDialog):
         btn_open_log = QPushButton("📄 Abrir archivo sync.log")
         btn_open_log.setStyleSheet("padding: 6px 12px; color: #0078D4; font-size: 11px;")
         def open_external_log():
-            lf = DATA_DIR / "sync.log"
+            lf = log_path()
             if lf.exists():
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(lf)))
         btn_open_log.clicked.connect(open_external_log)
@@ -350,6 +363,12 @@ class SettingsDialog(QDialog):
         self.btn_reauth.clicked.connect(self.reauthenticate)
         layout.addRow("Sesión de Fondo (Playwright/MCP):", self.btn_reauth)
 
+        self.btn_accounts = QPushButton("👤 Cuentas…")
+        self.btn_accounts.setStyleSheet("padding: 6px 10px;")
+        self.btn_accounts.setToolTip("Agregar, listar y cambiar entre cuentas Microsoft 365")
+        self.btn_accounts.clicked.connect(self.open_accounts)
+        layout.addRow(f"Cuenta actual ({self.cfg.get('account_alias', '')}):", self.btn_accounts)
+
         from m365_bridge.updater import MODE_LABEL, install_mode
         ver_row = QHBoxLayout()
         self.version_label = QLabel(f"v{__version__} · {MODE_LABEL[install_mode()]}")
@@ -379,8 +398,12 @@ class SettingsDialog(QDialog):
         btns.addWidget(btn_cancel)
         layout.addRow(btns)
 
+    def open_accounts(self):
+        from m365_bridge.accounts_dialog import AccountsDialog
+        AccountsDialog(self).exec()
+
     def reauthenticate(self):
-        launch_interactive_login()
+        launch_interactive_login(self.cfg.get("account_id"))
         QMessageBox.information(
             self,
             "Reautenticación M365",
@@ -455,14 +478,16 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.cfg = get_config()
-        self.setWindowTitle(f"M365 Linux Bridge v{__version__} - {self.cfg.get('institution_name', 'Office 365')}")
+        self.account_id = self.cfg.get("account_id")
+        self.setWindowTitle(self._window_title())
         self.resize(1200, 800)
         if ICON_PATH.exists():
             self.setWindowIcon(QIcon(str(ICON_PATH)))
 
-        profile_storage = DATA_DIR / "webengine_profile"
+        profile_storage = webengine_profile_dir(self.account_id)
         profile_storage.mkdir(parents=True, exist_ok=True)
-        self.web_profile = QWebEngineProfile("M365Profile", self)
+        profile_name = "M365Profile" if self.account_id == "default" else f"M365Profile-{self.account_id}"
+        self.web_profile = QWebEngineProfile(profile_name, self)
         self.web_profile.setPersistentStoragePath(str(profile_storage))
         self.web_profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
         self.web_profile.setPersistentPermissionsPolicy(QWebEngineProfile.PersistentPermissionsPolicy.StoreOnDisk)
@@ -555,6 +580,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         toolbar.addWidget(self.progress_bar)
 
+        self.btn_accounts = QPushButton("👤 " + str(self.cfg.get("account_alias", "")))
+        self.btn_accounts.setToolTip("Cuentas Microsoft 365")
+        self.btn_accounts.clicked.connect(self.open_accounts)
+        toolbar.addWidget(self.btn_accounts)
+
         self.btn_settings = QPushButton("⚙")
         self.btn_settings.setToolTip("Configuración")
         self.btn_settings.setFixedWidth(32)
@@ -576,6 +606,12 @@ class MainWindow(QMainWindow):
         # Aviso de versión nueva al abrir (no bloquea; sin red no dice nada)
         from m365_bridge.update_ui import check_on_startup
         QTimer.singleShot(3000, lambda: check_on_startup(self))
+
+    def _window_title(self):
+        title = f"M365 Linux Bridge v{__version__} - {self.cfg.get('institution_name', 'Office 365')}"
+        if len(cfgmod_list_accounts()) > 1:
+            title += f" [{self.cfg.get('account_alias', self.account_id)}]"
+        return title
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -610,7 +646,11 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self)
         if dlg.exec():
             self.cfg = get_config()
-            self.setWindowTitle(f"M365 Linux Bridge v{__version__} - {self.cfg.get('institution_name', 'Office 365')}")
+            self.setWindowTitle(self._window_title())
+
+    def open_accounts(self):
+        from m365_bridge.accounts_dialog import AccountsDialog
+        AccountsDialog(self).exec()
 
     def open_selective_sync(self):
         from m365_bridge.selective_dialog import SelectiveSyncDialog
@@ -639,7 +679,7 @@ class MainWindow(QMainWindow):
         self.btn_status.setText("Conectando...")
         self.btn_status.setStyleSheet("color: #0078D4; font-size: 11px; font-weight: bold; margin-right: 6px; border: 1px solid #cce4f7; border-radius: 3px; padding: 3px 8px; background-color: #f8fbff;")
 
-        self.worker = SyncWorker()
+        self.worker = SyncWorker(self.account_id)
         self.worker.progress.connect(self.on_sync_progress)
         self.worker.finished.connect(self.on_sync_finished)
         self.worker.error.connect(self.on_sync_error)

@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse, quote
 from typing import Dict, Any, List, Optional, Callable, Tuple
 from playwright.async_api import async_playwright
-from m365_bridge.config import get_config, save_config, DATA_DIR
+from m365_bridge.config import get_config, save_config, DATA_DIR, resolve_account, use_account, log_path, lock_path
 from m365_bridge.browser import get_browser_context, navigate_and_handle_prompts
 from m365_bridge.sync_db import (
     record_synced_file, get_file_state, list_all_tracked_files,
@@ -18,27 +18,29 @@ from m365_bridge.sync_db import (
 )
 from m365_bridge.selection import get_rules, migrate_config, pending_backfill, done_backfill
 
-_sync_logger = None
+_sync_loggers: Dict[str, logging.Logger] = {}
 
-def get_sync_logger():
-    global _sync_logger
-    if _sync_logger is None:
-        logger = logging.getLogger("m365_bridge.sync")
+def get_sync_logger(account: Optional[str] = None):
+    """Logger por cuenta (la legacy conserva el nombre y archivo históricos)."""
+    acc = resolve_account(account)
+    if acc not in _sync_loggers:
+        name = "m365_bridge.sync" if acc == "default" else f"m365_bridge.sync.{acc}"
+        logger = logging.getLogger(name)
         logger.setLevel(logging.INFO)
         if not logger.handlers:
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            log_file = DATA_DIR / "sync.log"
+            log_file = log_path(acc)
+            log_file.parent.mkdir(parents=True, exist_ok=True)
             handler = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
             formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
             handler.setFormatter(formatter)
             logger.addHandler(handler)
-        _sync_logger = logger
-    return _sync_logger
+        _sync_loggers[acc] = logger
+    return _sync_loggers[acc]
 
 class SyncLock:
-    def __init__(self):
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self.lock_file = DATA_DIR / "sync.lock"
+    def __init__(self, account: Optional[str] = None):
+        self.lock_file = lock_path(account)
+        self.lock_file.parent.mkdir(parents=True, exist_ok=True)
         self._fd = None
 
     def __enter__(self):
@@ -713,12 +715,20 @@ async def backfill_folder(
     return downloaded
 
 
-async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = None) -> Dict[str, Any]:
-    logger = get_sync_logger()
+async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = None,
+                   account: Optional[str] = None) -> Dict[str, Any]:
+    """Sincroniza una cuenta (la activa/por defecto si no se indica)."""
+    acc = resolve_account(account)
+    with use_account(acc):
+        return await _run_sync(progress_callback, acc)
+
+
+async def _run_sync(progress_callback: Optional[Callable[[str, int], None]], acc: str) -> Dict[str, Any]:
+    logger = get_sync_logger(acc)
     logger.info("=== Iniciando ciclo de sincronización ===")
 
-    with SyncLock():
-        cfg = get_config()
+    with SyncLock(acc):
+        cfg = get_config(acc)
         if migrate_config(cfg):
             save_config(cfg)
             logger.info("Sync selectiva: configuración migrada (Recordings/Meetings/Temporales ahora son carpetas normales)")
@@ -728,7 +738,7 @@ async def run_sync(progress_callback: Optional[Callable[[str, int], None]] = Non
             progress_callback("Conectando con Microsoft 365...", 0)
 
         async with async_playwright() as p:
-            context, should_close = await get_browser_context(p)
+            context, should_close = await get_browser_context(p, acc)
             try:
                 page = await context.new_page()
                 await navigate_and_handle_prompts(page, "https://outlook.cloud.microsoft/mail/", timeout=35000)
