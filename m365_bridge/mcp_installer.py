@@ -70,3 +70,29 @@ def install_opencode() -> Tuple[bool, str]:
         return True, str(config_path)
     except Exception as e:
         return False, str(e)
+
+def install_codex() -> Tuple[bool, str]:
+    config_path = Path.home() / ".codex" / "config.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    server_block = (
+        "\n[mcp_servers.m365]\n"
+        f"command = \"{PYTHON_BIN}\"\n"
+        f"args = [\"{MCP_SERVER_SCRIPT}\"]\n"
+    )
+    try:
+        content = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+        if "[mcp_servers.m365]" in content:
+            import re
+            pattern = r"\[mcp_servers\.m365\][\s\S]*?(?=\n\[|\Z)"
+            replacement = (
+                "[mcp_servers.m365]\n"
+                f"command = \"{PYTHON_BIN}\"\n"
+                f"args = [\"{MCP_SERVER_SCRIPT}\"]\n"
+            )
+            content = re.sub(pattern, replacement, content)
+        else:
+            content = content.rstrip() + ("\n\n" if content.strip() else "") + server_block.strip() + "\n"
+        config_path.write_text(content, encoding="utf-8")
+        return True, str(config_path)
+    except Exception as e:
+        return False, str(e)

@@ -1,4 +1,4 @@
-import sys, os
+import sys, os, re, shutil, subprocess
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Debe ir antes de importar PyQt6 (QtWebEngine lee estas variables al iniciar).
@@ -38,7 +38,7 @@ from m365_bridge.config import (
 from m365_bridge import __version__
 from m365_bridge.sync import run_sync
 from m365_bridge.browser import launch_interactive_login
-from m365_bridge.mcp_installer import install_claude_desktop, install_antigravity, install_opencode
+from m365_bridge.mcp_installer import install_claude_desktop, install_antigravity, install_opencode, install_codex
 
 ICON_PATH = Path(__file__).parent.parent / "icons" / "m365.png"
 
@@ -246,6 +246,11 @@ class McpDialog(QDialog):
         self.btn_opencode.clicked.connect(self.do_install_opencode)
         btns_layout.addWidget(self.btn_opencode)
 
+        self.btn_codex = QPushButton(" Instalar en Codex")
+        self.btn_codex.setStyleSheet("padding: 8px 12px; font-weight: bold;")
+        self.btn_codex.clicked.connect(self.do_install_codex)
+        btns_layout.addWidget(self.btn_codex)
+
         layout.addLayout(btns_layout)
 
         layout.addSpacing(15)
@@ -291,6 +296,13 @@ class McpDialog(QDialog):
         else:
             QMessageBox.warning(self, "OpenCode", f"No se pudo registrar: {path}")
 
+    def do_install_codex(self):
+        ok, path = install_codex()
+        if ok:
+            QMessageBox.information(self, "Codex", f"¡Servidor MCP registrado en Codex con éxito!\\n\\nArchivo: {path}")
+        else:
+            QMessageBox.warning(self, "Codex", f"No se pudo registrar en Codex: {path}")
+
 class M365WebPage(QWebEnginePage):
     """Página WebEngine personalizada para soportar enlaces emergentes, permisos de medios (Teams) y descargas."""
     def __init__(self, profile, parent=None):
@@ -314,9 +326,40 @@ class M365WebPage(QWebEnginePage):
             QWebEnginePage.PermissionPolicy.PermissionGrantedByUser
         )
 
-    def createWindow(self, window_type):
-        # Permite que enlaces con target="_blank", window.open o solicitudes de descarga se ejecuten en la misma página
-        return self
+
+
+
+def open_in_file_manager(target_path: Path):
+    """Abre el gestor de archivos seleccionando el archivo si es posible, o abriendo la carpeta contenedora."""
+    try:
+        p = Path(target_path).resolve()
+        target_dir = str(p.parent if p.is_file() or not p.exists() else p)
+        file_path = str(p) if p.exists() and not p.is_dir() else None
+
+        # 1. Intentar con dolphin --select (gestor nativo en KDE / CachyOS)
+        if file_path and shutil.which("dolphin"):
+            subprocess.Popen(["dolphin", "--select", file_path])
+            return
+
+        # 2. Intentar con dbus FileManager1 ShowItems (estándar freedesktop)
+        if file_path and shutil.which("busctl"):
+            res = subprocess.run([
+                "busctl", "--user", "call", "org.freedesktop.FileManager1",
+                "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1",
+                "ShowItems", "as", "1", f"file://{file_path}", ""
+            ], capture_output=True, timeout=1)
+            if res.returncode == 0:
+                return
+
+        # 3. Abrir la carpeta directamente con dolphin si existe
+        if shutil.which("dolphin"):
+            subprocess.Popen(["dolphin", target_dir])
+            return
+
+        # 4. Fallback a xdg-open
+        subprocess.Popen(["xdg-open", target_dir])
+    except Exception as e:
+        print(f"Error abriendo gestor de archivos: {e}")
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
@@ -356,6 +399,12 @@ class SettingsDialog(QDialog):
         self.max_mb_input.setValue(self.cfg.get("max_file_size_mb", 200))
         self.max_mb_input.setSuffix(" MB")
         layout.addRow("Límite tamaño descarga automática:", self.max_mb_input)
+
+        self.interval_input = QSpinBox()
+        self.interval_input.setRange(0, 1440)
+        self.interval_input.setValue(self.cfg.get("auto_sync_interval_minutes", 60))
+        self.interval_input.setSuffix(" min (0 = desactivado)")
+        layout.addRow("Intervalo sincro periódica:", self.interval_input)
 
         self.btn_reauth = QPushButton("🔑 Reautenticar Motor en Navegador")
         self.btn_reauth.setStyleSheet("padding: 6px 10px; font-weight: bold;")
@@ -471,6 +520,7 @@ class SettingsDialog(QDialog):
         self.cfg["downloads_folder"] = self.down_input.text().strip()
         self.cfg["ask_download_location"] = self.ask_down_chk.isChecked()
         self.cfg["max_file_size_mb"] = self.max_mb_input.value()
+        self.cfg["auto_sync_interval_minutes"] = self.interval_input.value()
         save_config(self.cfg)
         self.accept()
 
@@ -494,12 +544,25 @@ class MainWindow(QMainWindow):
         self.web_profile.downloadRequested.connect(self.on_download_requested)
         self._active_downloads = []
 
-        # Habilitar soporte multimedia, WebRTC y captura de pantalla para Teams
+        # Limpiar QtWebEngine del User-Agent para que Microsoft 365, SharePoint y OneDrive
+        # reconozcan el navegador como Google Chrome estándar y permitan la previsualización / edición web
+        # de documentos (Word, Excel, PowerPoint, imágenes, PDFs) en la misma ventana sin forzar descargas.
+        orig_ua = self.web_profile.httpUserAgent()
+        clean_ua = re.sub(r'QtWebEngine/\S+\s*', '', orig_ua)
+        self.web_profile.setHttpUserAgent(clean_ua)
+
+        # Habilitar soporte multimedia, WebRTC, plugins y previsualizaciones web completas
         web_settings = self.web_profile.settings()
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.ScreenCaptureEnabled, True)
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.WebRTCPublicInterfacesOnly, False)
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, True)
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.PdfViewerEnabled, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.AllowWindowActivationFromJavaScript, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -594,14 +657,27 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(toolbar_container)
 
         # --- NAVEGADOR EMBEBIDO (WEBVIEW) OCUPA TODO EL ESPACIO RESTANTE ---
+        self._last_browse_url = None
         self.webview = QWebEngineView(self)
         self.web_page = M365WebPage(self.web_profile, self.webview)
+        if hasattr(self.web_page, "fullScreenRequested"):
+            self.web_page.fullScreenRequested.connect(lambda req: req.accept())
+        if hasattr(self.web_page, "windowCloseRequested"):
+            self.web_page.windowCloseRequested.connect(self.on_window_close_requested)
+        if hasattr(self.web_page, "newWindowRequested"):
+            self.web_page.newWindowRequested.connect(self.on_new_window_requested)
         self.webview.setPage(self.web_page)
         self.webview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.webview.urlChanged.connect(self.on_url_changed)
         main_layout.addWidget(self.webview, 1)
 
         self.show_outlook()
         self.worker = None
+
+        # Temporizador de sincronización periódica en segundo plano
+        self.auto_sync_timer = QTimer(self)
+        self.auto_sync_timer.timeout.connect(self.trigger_auto_sync)
+        self.update_auto_sync_timer()
 
         # Aviso de versión nueva al abrir (no bloquea; sin red no dice nada)
         from m365_bridge.update_ui import check_on_startup
@@ -631,22 +707,61 @@ class MainWindow(QMainWindow):
         url = self.cfg.get("teams_url", "https://teams.microsoft.com/v2/")
         self.webview.setUrl(QUrl(url))
 
+    def on_new_window_requested(self, request):
+        url = request.requestedUrl()
+        if url.isValid() and url.toString() not in ("", "about:blank"):
+            self.webview.setUrl(url)
+
+    def on_url_changed(self, url: QUrl):
+        u = url.toString()
+        is_editor = any(m in u for m in (":w:/r/", ":x:/r/", ":p:/r/", "WopiFrame", "Doc.aspx"))
+        if not is_editor and any(m in u for m in ("sharepoint.com", "office.com", "onedrive.live.com", "onedrive.com")):
+            self._last_browse_url = u
+
     def go_back(self):
-        self.webview.back()
+        hist = self.webview.history()
+        if hist.canGoBack():
+            back_item = hist.backItem()
+            if back_item:
+                back_u = back_item.url().toString()
+                if any(m in back_u for m in (":w:/r/", ":x:/r/", ":p:/r/")):
+                    items = hist.backItems(2)
+                    if len(items) >= 2:
+                        hist.goToItem(items[0])
+                        return
+            self.webview.back()
+        elif getattr(self, "_last_browse_url", None):
+            self.webview.setUrl(QUrl(self._last_browse_url))
+        else:
+            self.show_onedrive()
 
     def reload_page(self):
         self.webview.reload()
 
+    def on_window_close_requested(self):
+        self.go_back()
+
     def open_local_folder(self):
-        import subprocess
         path = self.cfg.get("sync_folder", str(Path.home() / "OneDrive"))
-        subprocess.Popen(["xdg-open", path])
+        open_in_file_manager(Path(path))
+
+    def update_auto_sync_timer(self):
+        interval_min = self.cfg.get("auto_sync_interval_minutes", 60)
+        if interval_min > 0:
+            self.auto_sync_timer.start(interval_min * 60 * 1000)
+        else:
+            self.auto_sync_timer.stop()
+
+    def trigger_auto_sync(self):
+        if (self.worker is None or not self.worker.isRunning()) and self.btn_sync.isEnabled():
+            self.start_sync()
 
     def open_settings(self):
         dlg = SettingsDialog(self)
         if dlg.exec():
             self.cfg = get_config()
             self.setWindowTitle(self._window_title())
+            self.update_auto_sync_timer()
 
     def open_accounts(self):
         from m365_bridge.accounts_dialog import AccountsDialog
@@ -816,8 +931,7 @@ class MainWindow(QMainWindow):
                     QMessageBox.StandardButton.Yes
                 )
                 if reply == QMessageBox.StandardButton.Yes:
-                    import subprocess
-                    subprocess.Popen(["xdg-open", str(target_dir)])
+                    open_in_file_manager(final_path)
 
             elif state == QWebEngineDownloadRequest.DownloadState.DownloadInterrupted:
                 self.progress_bar.setVisible(False)
@@ -845,6 +959,9 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setDesktopFileName("m365-linux-bridge")
+    if ICON_PATH.exists():
+        app.setWindowIcon(QIcon(str(ICON_PATH)))
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
