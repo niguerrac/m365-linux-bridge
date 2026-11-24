@@ -6,15 +6,67 @@ from typing import List, Dict, Any, Optional, Union
 from mcp.server.fastmcp import FastMCP
 from playwright.async_api import async_playwright
 from m365_bridge.browser import get_browser_context, navigate_and_handle_prompts
-from m365_bridge.config import get_config
+from m365_bridge import config as _config
+from m365_bridge.config import get_config, use_account
 
 mcp = FastMCP("m365_linux_bridge")
 
+
+def _resolve_account(account: Optional[str]) -> str:
+    """Resuelve ``account`` (id, alias o email; None = cuenta por defecto) a un id.
+
+    Lanza ``ValueError`` con un mensaje claro si no existe.
+    """
+    accounts = _config.list_accounts()
+    if account is None or not str(account).strip():
+        return _config.resolve_account(None)
+    key = str(account).strip().lower()
+    for field in ("id", "alias", "email"):
+        for a in accounts:
+            if a.get(field) and str(a[field]).lower() == key:
+                return a["id"]
+    disponibles = ", ".join(a["id"] for a in accounts)
+    raise ValueError(f"Cuenta M365 desconocida: {account!r}. Cuentas disponibles: {disponibles}")
+
+
+def _has_session(acc: str) -> bool:
+    """True si el perfil del navegador de la cuenta tiene una base de cookies."""
+    try:
+        prof = _config.browser_profile_dir(acc)
+    except Exception:
+        return False
+    return any((prof / sub).is_file() for sub in (
+        "Default/Cookies", "Default/Network/Cookies", "Cookies", "Network/Cookies"))
+
+
 @mcp.tool()
-async def m365_list_emails(count: int = 10) -> str:
-    """Obtiene los últimos correos recibidos en la bandeja de entrada institucional."""
+async def m365_list_accounts() -> str:
+    """Lista las cuentas M365 configuradas: id, alias, email, si es la cuenta por defecto y si
+    tiene sesión (cookies) guardada. Usa el id, alias o email como parámetro `account` en
+    las demás tools; si se omite se usa la cuenta por defecto."""
+    accounts = _config.list_accounts()
+    out = [{
+        "id": a["id"],
+        "alias": a["alias"],
+        "email": a["email"],
+        "is_default": a["is_default"],
+        "has_session": _has_session(a["id"]),
+    } for a in accounts]
+    return json.dumps({"accounts": out}, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def m365_list_emails(count: int = 10, account: Optional[str] = None) -> str:
+    """Obtiene los últimos correos recibidos en la bandeja de entrada institucional.
+
+    Args:
+        account: id, alias o email de la cuenta M365 (opcional; por defecto la cuenta por defecto).
+    """
+    try:
+        acc = _resolve_account(account)
+    except ValueError as e:
+        return f"Error: {e}"
     async with async_playwright() as p:
-        context, should_close = await get_browser_context(p)
+        context, should_close = await get_browser_context(p, acc)
         page = None
         try:
             page = await context.new_page()
@@ -52,10 +104,18 @@ async def m365_list_emails(count: int = 10) -> str:
                 await context.close()
 
 @mcp.tool()
-async def m365_search_emails(query: str) -> str:
-    """Busca correos en Outlook institucional por palabra clave, remitente o tema."""
+async def m365_search_emails(query: str, account: Optional[str] = None) -> str:
+    """Busca correos en Outlook institucional por palabra clave, remitente o tema.
+
+    Args:
+        account: id, alias o email de la cuenta M365 (opcional; por defecto la cuenta por defecto).
+    """
+    try:
+        acc = _resolve_account(account)
+    except ValueError as e:
+        return f"Error: {e}"
     async with async_playwright() as p:
-        context, should_close = await get_browser_context(p)
+        context, should_close = await get_browser_context(p, acc)
         page = None
         try:
             page = await context.new_page()
@@ -101,7 +161,8 @@ async def m365_send_email(
     body: str,
     cc: Optional[Union[str, List[str]]] = None,
     attachments: Optional[List[str]] = None,
-    clear_signature: bool = True
+    clear_signature: bool = True,
+    account: Optional[str] = None
 ) -> str:
     """Envía un correo electrónico desde la cuenta institucional de Outlook.
     
@@ -110,8 +171,14 @@ async def m365_send_email(
         subject: Asunto del correo
         body: Contenido del mensaje de texto
         attachments: Lista opcional de rutas absolutas de archivos locales a adjuntar (ej. ['/home/nilson/documento.pdf'])
+        account: id, alias o email de la cuenta M365 desde la que enviar (opcional; por defecto la cuenta por defecto).
         clear_signature: Si es True (por defecto), elimina la firma automática por defecto de Outlook para evitar firmas duplicadas cuando el mensaje ya incluye una firma o despedida. Si es False, preserva la firma automática y redacta el texto arriba de ella.
     """
+    try:
+        acc = _resolve_account(account)
+    except ValueError as e:
+        return f"Error: {e}"
+
     to_list: List[str] = []
     if isinstance(to, list):
         to_list = [t.strip() for t in to if t and t.strip()]
@@ -137,7 +204,7 @@ async def m365_send_email(
             valid_attachments.append(p)
 
     async with async_playwright() as p:
-        context, should_close = await get_browser_context(p)
+        context, should_close = await get_browser_context(p, acc)
         page = None
         try:
             page = await context.new_page()
@@ -225,10 +292,18 @@ async def m365_send_email(
                 await context.close()
 
 @mcp.tool()
-async def m365_list_files() -> str:
-    """Lista los archivos y documentos disponibles en el OneDrive institucional."""
+async def m365_list_files(account: Optional[str] = None) -> str:
+    """Lista los archivos y documentos disponibles en el OneDrive institucional.
+
+    Args:
+        account: id, alias o email de la cuenta M365 (opcional; por defecto la cuenta por defecto).
+    """
+    try:
+        acc = _resolve_account(account)
+    except ValueError as e:
+        return f"Error: {e}"
     async with async_playwright() as p:
-        context, should_close = await get_browser_context(p)
+        context, should_close = await get_browser_context(p, acc)
         page = None
         try:
             page = await context.new_page()
@@ -289,20 +364,30 @@ async def m365_list_files() -> str:
                 await context.close()
 
 @mcp.tool()
-async def m365_sync_folders_list(path: str = "") -> str:
+async def m365_sync_folders_list(path: str = "", account: Optional[str] = None) -> str:
     """Lista las subcarpetas de OneDrive dentro de `path` ("" = raíz) con su estado de
     sincronización en este equipo: [on] se sincroniza, [off] desmarcada, [partial] tiene
-    subcarpetas con el estado contrario. Incluye tamaño en la nube y si existe localmente."""
+    subcarpetas con el estado contrario. Incluye tamaño en la nube y si existe localmente.
+    `account`: id, alias o email de la cuenta M365 (opcional; por defecto la cuenta por defecto)."""
+    try:
+        acc = _resolve_account(account)
+    except ValueError as e:
+        return f"Error: {e}"
+    with use_account(acc):
+        return await _sync_folders_list(path, acc)
+
+
+async def _sync_folders_list(path: str, acc: str) -> str:
     from m365_bridge.cloud import open_sharepoint_session
     from m365_bridge.selection import get_rules
     from m365_bridge.selective_dialog import human_size
     from m365_bridge.sync import list_remote_children
 
-    cfg = get_config()
+    cfg = get_config(acc)
     rules = get_rules(cfg)
     local = Path(cfg["sync_folder"])
     path = path.strip("/")
-    async with open_sharepoint_session() as s:
+    async with open_sharepoint_session(acc) as s:
         items = await list_remote_children(s.client, s.drive_endpoint, path)
     folders = sorted((i for i in items if i.get("folder")), key=lambda i: i["name"].lower())
     out = [f"=== Carpetas en /{path} ({len(folders)}) ==="]
@@ -314,17 +399,28 @@ async def m365_sync_folders_list(path: str = "") -> str:
 
 
 @mcp.tool()
-async def m365_sync_folder_set(path: str, sync: bool, confirmar_borrado: bool = False) -> str:
+async def m365_sync_folder_set(path: str, sync: bool, confirmar_borrado: bool = False,
+                               account: Optional[str] = None) -> str:
     """Marca (sync=True) o desmarca (sync=False) una carpeta de OneDrive para sincronizar en
     este equipo. Desmarcar BORRA la copia local (sigue en la nube): sin
     confirmar_borrado=True solo devuelve qué se borraría. Pregúntale al usuario antes de
-    confirmar. Marcar encola la descarga completa para el próximo ciclo de sync."""
+    confirmar. Marcar encola la descarga completa para el próximo ciclo de sync.
+    `account`: id, alias o email de la cuenta M365 (opcional; por defecto la cuenta por defecto)."""
+    try:
+        acc = _resolve_account(account)
+    except ValueError as e:
+        return f"Error: {e}"
+    with use_account(acc):
+        return _sync_folder_set(path, sync, confirmar_borrado, acc)
+
+
+def _sync_folder_set(path: str, sync: bool, confirmar_borrado: bool, acc: str) -> str:
     from m365_bridge.selection import (
         apply_selection, diff_selection, folder_local_size, get_rules,
     )
     from m365_bridge.selective_dialog import human_size
 
-    cfg = get_config()
+    cfg = get_config(acc)
     local = Path(cfg["sync_folder"])
     old = get_rules(cfg)
     new = old.copy()
