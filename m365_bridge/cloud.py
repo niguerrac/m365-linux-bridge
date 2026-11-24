@@ -6,12 +6,13 @@ directo a OneDrive, toma las cookies y arma un cliente httpx.
 """
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 import httpx
 from playwright.async_api import async_playwright
 
 from m365_bridge.browser import get_browser_context
+from m365_bridge.config import resolve_account
 from m365_bridge.sync_db import get_kv
 
 UA = (
@@ -31,14 +32,16 @@ class SharePointSession:
 
 
 @asynccontextmanager
-async def open_sharepoint_session() -> AsyncIterator[SharePointSession]:
-    base_url = get_kv("sharepoint_base_url")
+async def open_sharepoint_session(account: Optional[str] = None) -> AsyncIterator[SharePointSession]:
+    """Sesión SharePoint/OneDrive de la cuenta (la activa/por defecto si no se indica)."""
+    acc = resolve_account(account)
+    base_url = get_kv("sharepoint_base_url", account=acc)
     if not base_url:
         raise RuntimeError(
             "Todavía no se conoce tu OneDrive: ejecuta una sincronización una vez y vuelve a intentar."
         )
     async with async_playwright() as p:
-        context, should_close = await get_browser_context(p)
+        context, should_close = await get_browser_context(p, acc)
         page = None
         try:
             page = await context.new_page()

@@ -3,12 +3,14 @@ import subprocess
 from pathlib import Path
 from typing import Tuple, Any
 from playwright.async_api import async_playwright, BrowserContext
-from m365_bridge.config import BROWSER_PROFILE_DIR, get_config
+from typing import Optional
+from m365_bridge.config import get_config, browser_profile_dir, resolve_account
 
-def cleanup_singleton_locks():
+def cleanup_singleton_locks(account: Optional[str] = None):
     """Limpia bloqueos huérfanos de Chromium verificando si el proceso dueño sigue activo."""
+    profile_dir = browser_profile_dir(account)
     for lock in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
-        p = BROWSER_PROFILE_DIR / lock
+        p = profile_dir / lock
         if p.exists() or p.is_symlink():
             try:
                 target = os.readlink(p) if p.is_symlink() else ""
@@ -47,12 +49,14 @@ def find_chromium() -> str:
     )
 
 
-def launch_interactive_login():
-    """Lanza una ventana de Chromium con el perfil del motor para login interactivo / 2FA."""
-    cleanup_singleton_locks()
+def launch_interactive_login(account: Optional[str] = None):
+    """Lanza una ventana de Chromium con el perfil de la cuenta para login interactivo / 2FA."""
+    cleanup_singleton_locks(account)
+    profile_dir = browser_profile_dir(account)
+    profile_dir.mkdir(parents=True, exist_ok=True)
     subprocess.Popen([
         find_chromium(),
-        f"--user-data-dir={BROWSER_PROFILE_DIR}",
+        f"--user-data-dir={profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",
         "--app=https://outlook.cloud.microsoft/mail/"
@@ -115,13 +119,15 @@ async def navigate_and_handle_prompts(page, target_url: str = "https://outlook.c
         raise RuntimeError("La sesión de Microsoft 365 ha caducado o requiere confirmación interactiva / 2FA.")
     return True
 
-async def get_browser_context(p) -> Tuple[BrowserContext, bool]:
+async def get_browser_context(p, account: Optional[str] = None) -> Tuple[BrowserContext, bool]:
     """Obtiene el contexto del navegador. Retorna (context, should_close).
     Si ya hay una instancia abierta con CDP en el puerto configurado, se conecta a ella.
     De lo contrario, levanta una instancia headless aislada.
     """
-    cfg = get_config()
+    acc = resolve_account(account)
+    cfg = get_config(acc)
     port = cfg.get("remote_debugging_port", 9222)
+    profile_dir = browser_profile_dir(acc)
 
     try:
         browser = await p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}", timeout=2500)
@@ -131,17 +137,18 @@ async def get_browser_context(p) -> Tuple[BrowserContext, bool]:
     except Exception:
         pass
 
-    cleanup_singleton_locks()
+    cleanup_singleton_locks(acc)
+    profile_dir.mkdir(parents=True, exist_ok=True)
 
     # El lanzador de Chromium (Arch/CachyOS) lee ~/.config/chromium-flags.conf y agrega sus
     # flags; si traen URLs, el modo headless falla con "Multiple targets are not supported".
     # Aislamos esta instancia de la config personal del usuario.
-    isolated_cfg = BROWSER_PROFILE_DIR.parent / "chromium_cfg"
+    isolated_cfg = profile_dir.parent / "chromium_cfg"
     isolated_cfg.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "XDG_CONFIG_HOME": str(isolated_cfg)}
 
     context = await p.chromium.launch_persistent_context(
-        user_data_dir=str(BROWSER_PROFILE_DIR),
+        user_data_dir=str(profile_dir),
         executable_path=find_chromium(),
         headless=True,
         env=env,
