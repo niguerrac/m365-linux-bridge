@@ -1,14 +1,16 @@
 import sys, os; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import sys
 import subprocess
+import time
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 from PyQt6.QtGui import QIcon, QActionGroup
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer
 from m365_bridge.config import (
     get_config, list_accounts, get_active_account_id, set_active_account, ACCOUNT_ENV_VAR,
-    browser_profile_dir,
+    browser_profile_dir, DATA_DIR,
 )
+from m365_bridge.tray_support import SingleInstance, apply_qpa_platform, wait_until
 from m365_bridge.browser import cleanup_singleton_locks, find_chromium
 from m365_bridge.sync import run_sync
 from m365_bridge.watcher import LocalFolderWatcher
@@ -17,6 +19,8 @@ BRIDGE_DIR = Path(__file__).parent.parent
 PYTHON_BIN = BRIDGE_DIR / ".venv" / "bin" / "python"
 GUI_SCRIPT = BRIDGE_DIR / "m365_bridge" / "gui.py"
 ICON_PATH = BRIDGE_DIR / "icons" / "m365.png"
+LOCK_PATH = DATA_DIR / "tray.lock"
+TRAY_WAIT_SECONDS = 30  # KDE puede tardar en publicar la bandeja al iniciar sesión
 
 class SyncWorker(QThread):
     finished = pyqtSignal(object)
@@ -47,6 +51,7 @@ class M365TrayApp:
         self.app.setQuitOnLastWindowClosed(False)
 
         self.icon = QIcon(str(ICON_PATH)) if ICON_PATH.exists() else QIcon()
+        self._wait_for_system_tray()
         self.tray = QSystemTrayIcon(self.icon, self.app)
         self.tray.setToolTip("M365 Linux Bridge (Outlook & OneDrive)")
 
@@ -86,6 +91,10 @@ class M365TrayApp:
 
         self.tray.setContextMenu(menu)
         self.tray.show()
+        # Si la bandeja aún no existía, reintentar mostrar el icono hasta que aparezca
+        self._tray_retry = QTimer(self.app)
+        self._tray_retry.timeout.connect(self._retry_show_tray)
+        self._tray_retry.start(5000)
         self.worker = None
 
         # 1. Iniciar vigilante inotify para cambios locales en tiempo real
@@ -99,6 +108,20 @@ class M365TrayApp:
             self.timer = QTimer(self.app)
             self.timer.timeout.connect(self.start_sync_silent)
             self.timer.start(interval_min * 60 * 1000)
+
+    # --- bandeja del sistema -------------------------------------------
+    def _wait_for_system_tray(self):
+        def sleep(s):
+            self.app.processEvents()
+            time.sleep(s)
+        if not wait_until(QSystemTrayIcon.isSystemTrayAvailable, TRAY_WAIT_SECONDS, 1.0, sleep=sleep):
+            print(f"[Tray] La bandeja del sistema no apareció en {TRAY_WAIT_SECONDS}s; se seguirá reintentando.", flush=True)
+
+    def _retry_show_tray(self):
+        if self.tray.isVisible():
+            self._tray_retry.stop()
+        elif QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray.show()
 
     # --- cuentas -------------------------------------------------------
     def start_watcher(self):
@@ -242,8 +265,15 @@ class M365TrayApp:
         return self.app.exec()
 
 def main():
+    lock = SingleInstance(LOCK_PATH)
+    if not lock.acquire():
+        print(f"[Tray] Ya hay una bandeja en ejecución (PID {lock.owner_pid()}); saliendo.", flush=True)
+        return 0
+    apply_qpa_platform()  # wayland con fallback a xcb si falta el plugin
     app = M365TrayApp()
-    sys.exit(app.run())
+    code = app.run()
+    lock.release()
+    sys.exit(code)
 
 if __name__ == "__main__":
     main()

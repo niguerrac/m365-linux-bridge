@@ -90,12 +90,13 @@ if [ "${M365_NO_DESKTOP:-0}" != "1" ]; then
     done
     command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 
+    # Lanzador de la app: arranca también la bandeja (idempotente por el lockfile de tray.py).
     cat << EOF > "$APPLICATIONS_DIR/m365-linux-bridge.desktop"
 [Desktop Entry]
 Type=Application
 Name=M365 Linux Bridge
 Comment=Suite de integración de Outlook, OneDrive y MCP para Linux
-Exec=$DIR/.venv/bin/python $DIR/m365_bridge/gui.py
+Exec=$DIR/.venv/bin/python $DIR/m365_bridge/launcher.py
 Icon=m365-linux-bridge
 Terminal=false
 Categories=Office;Network;Email;FileManager;
@@ -119,7 +120,7 @@ fi
 if [ "${M365_RESTART_TRAY:-0}" = "1" ] && pgrep -f "$DIR/m365_bridge/tray.py" >/dev/null; then
     echo "Reiniciando la bandeja…"
     pkill -f "$DIR/m365_bridge/tray.py" || true
-    sleep 1
+    sleep 2  # dejar que el lockfile se libere
     setsid nohup "$DIR/.venv/bin/python" "$DIR/m365_bridge/tray.py" >/dev/null 2>&1 < /dev/null &
 fi
 
