@@ -15,6 +15,10 @@ if "--account" in sys.argv:
         _set_active_account(sys.argv[_i + 1])
         del sys.argv[_i:_i + 2]
 os.environ.setdefault("QTWEBENGINE_REMOTE_DEBUGGING", str(_get_config().get("remote_debugging_port", 9222)))
+_extra_flags = "--disable-features=WebAuthentication,WebAuthn,WebAuthenticationRemoteDesktopSupport"
+_cur_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
+if "WebAuthentication" not in _cur_flags:
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{_cur_flags} {_extra_flags}".strip()
 
 from pathlib import Path
 from PyQt6.QtWidgets import (
@@ -28,7 +32,7 @@ from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QStandardPaths, QTimer
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import (
     QWebEngineProfile, QWebEnginePage, QWebEngineDownloadRequest,
-    QWebEnginePermission, QWebEngineSettings
+    QWebEnginePermission, QWebEngineSettings, QWebEngineScript
 )
 
 from m365_bridge.config import (
@@ -563,6 +567,21 @@ class MainWindow(QMainWindow):
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, True)
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.AllowWindowActivationFromJavaScript, True)
         web_settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
+
+        # QtWebEngine en Linux no soporta el diálogo nativo de Passkey/WebAuthn; ocultamos
+        # PublicKeyCredential para que Microsoft no quede colgado esperando llave de seguridad.
+        no_webauthn = QWebEngineScript()
+        no_webauthn.setName("disable-webauthn")
+        no_webauthn.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        no_webauthn.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+        no_webauthn.setRunsOnSubFrames(True)
+        no_webauthn.setSourceCode(
+            "try {"
+            "  delete window.PublicKeyCredential;"
+            "  Object.defineProperty(window, 'PublicKeyCredential', { value: undefined, configurable: true });"
+            "} catch (e) {}"
+        )
+        self.web_profile.scripts().insert(no_webauthn)
 
         central = QWidget()
         self.setCentralWidget(central)

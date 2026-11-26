@@ -7,7 +7,9 @@ from PyQt6.QtGui import QIcon, QActionGroup
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer
 from m365_bridge.config import (
     get_config, list_accounts, get_active_account_id, set_active_account, ACCOUNT_ENV_VAR,
+    browser_profile_dir,
 )
+from m365_bridge.browser import cleanup_singleton_locks, find_chromium
 from m365_bridge.sync import run_sync
 from m365_bridge.watcher import LocalFolderWatcher
 
@@ -164,13 +166,27 @@ class M365TrayApp:
     def open_gui(self):
         subprocess.Popen([str(PYTHON_BIN), str(GUI_SCRIPT), "--account", get_active_account_id()])
 
+    def _open_chromium_app(self, url: str):
+        acc = get_active_account_id()
+        cleanup_singleton_locks(acc)
+        profile_dir = browser_profile_dir(acc)
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.Popen([
+            find_chromium(),
+            f"--user-data-dir={profile_dir}",
+            f"--class=m365-bridge-{acc}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            f"--app={url}",
+        ])
+
     def open_outlook(self):
         cfg = get_config()
-        subprocess.Popen(["/usr/bin/chromium", f"--app={cfg['outlook_url']}"])
+        self._open_chromium_app(cfg["outlook_url"])
 
     def open_onedrive(self):
         cfg = get_config()
-        subprocess.Popen(["/usr/bin/chromium", f"--app={cfg['onedrive_url']}"])
+        self._open_chromium_app(cfg["onedrive_url"])
 
     def open_folder(self):
         subprocess.Popen(["xdg-open", str(self.sync_folder)])
