@@ -451,5 +451,104 @@ def _sync_folder_set(path: str, sync: bool, confirmar_borrado: bool, acc: str) -
     return "\n".join(msg)
 
 
+def _sp_item_url(drive_endpoint: str, path: str, suffix: str) -> str:
+    """URL de SharePoint para un ítem por ruta (`root:/ruta:/suffix`) o la raíz."""
+    from urllib.parse import quote
+    path = path.strip().strip("/")
+    if not path:
+        return f"{drive_endpoint}/root{('/' + suffix) if suffix else ''}"
+    return f"{drive_endpoint}/root:/{quote(path)}:{('/' + suffix) if suffix else ''}"
+
+
+@mcp.tool()
+async def m365_sharepoint_list(site_url: str, path: str = "", account: Optional[str] = None) -> str:
+    """Lista archivos y carpetas de la biblioteca de documentos de un sitio SharePoint
+    (p. ej. https://tenant.sharepoint.com/sites/MiSitio) dentro de `path` ("" = raíz).
+    `account`: id, alias o email de la cuenta M365 (opcional; por defecto la cuenta por defecto)."""
+    try:
+        acc = _resolve_account(account)
+    except ValueError as e:
+        return f"Error: {e}"
+    from m365_bridge.cloud import open_sharepoint_site_session
+    try:
+        async with open_sharepoint_site_session(site_url, acc) as s:
+            url = _sp_item_url(s.drive_endpoint, path, "children")
+            items: List[Dict[str, Any]] = []
+            while url:
+                r = await s.client.get(url)
+                if r.status_code != 200:
+                    return f"Error: HTTP {r.status_code} al listar '/{path.strip('/')}'."
+                data = r.json()
+                items.extend(data.get("value", []))
+                url = data.get("@odata.nextLink")
+    except (RuntimeError, ValueError) as e:
+        return f"Error: {e}"
+    out = [f"=== {site_url.rstrip('/')} /{path.strip('/')} ({len(items)}) ==="]
+    for i in items:
+        if i.get("folder") is not None:
+            out.append(f"[Carpeta] {i['name']}")
+        else:
+            out.append(f"[Archivo] {i['name']} ({i.get('size', 0)} bytes)")
+    return "\n".join(out)
+
+
+@mcp.tool()
+async def m365_sharepoint_download(site_url: str, remote_path: str, local_path: str,
+                                   account: Optional[str] = None) -> str:
+    """Descarga un archivo de la biblioteca de un sitio SharePoint a `local_path`
+    (crea las carpetas padre si faltan).
+    `account`: id, alias o email de la cuenta M365 (opcional; por defecto la cuenta por defecto)."""
+    try:
+        acc = _resolve_account(account)
+    except ValueError as e:
+        return f"Error: {e}"
+    if not remote_path.strip().strip("/"):
+        return "Error: remote_path vacío."
+    from m365_bridge.cloud import open_sharepoint_site_session
+    try:
+        async with open_sharepoint_site_session(site_url, acc) as s:
+            r = await s.client.get(_sp_item_url(s.drive_endpoint, remote_path, "content"))
+            if r.status_code != 200:
+                return f"Error: HTTP {r.status_code} al descargar '{remote_path}'."
+            content = r.content
+    except (RuntimeError, ValueError) as e:
+        return f"Error: {e}"
+    dest = Path(local_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(content)
+    return f"Descargado '{remote_path}' -> {dest} ({len(content)} bytes)"
+
+
+@mcp.tool()
+async def m365_sharepoint_upload(site_url: str, local_path: str, remote_path: str,
+                                 account: Optional[str] = None) -> str:
+    """Sube (o actualiza) `local_path` en `remote_path` de la biblioteca de un sitio SharePoint
+    (PUT simple, pensado para archivos de hasta ~250 MB).
+    `account`: id, alias o email de la cuenta M365 (opcional; por defecto la cuenta por defecto)."""
+    try:
+        acc = _resolve_account(account)
+    except ValueError as e:
+        return f"Error: {e}"
+    src = Path(local_path)
+    if not src.is_file():
+        return f"Error: no existe el archivo local {local_path!r}."
+    if not remote_path.strip().strip("/"):
+        return "Error: remote_path vacío."
+    from m365_bridge.cloud import open_sharepoint_site_session
+    data = src.read_bytes()
+    try:
+        async with open_sharepoint_site_session(site_url, acc) as s:
+            r = await s.client.put(
+                _sp_item_url(s.drive_endpoint, remote_path, "content"),
+                content=data,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            if r.status_code not in (200, 201):
+                return f"Error: HTTP {r.status_code} al subir '{remote_path}'."
+    except (RuntimeError, ValueError) as e:
+        return f"Error: {e}"
+    return f"Subido {src} -> '{remote_path}' ({len(data)} bytes)"
+
+
 if __name__ == "__main__":
     mcp.run()

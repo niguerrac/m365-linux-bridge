@@ -69,3 +69,56 @@ async def open_sharepoint_session(account: Optional[str] = None) -> AsyncIterato
                     pass
             if should_close:
                 await context.close()
+
+
+@dataclass
+class SharePointSiteSession:
+    """Sesión sobre la biblioteca de documentos de un sitio SharePoint (no el OneDrive personal)."""
+    client: httpx.AsyncClient
+    site_url: str
+
+    @property
+    def drive_endpoint(self) -> str:
+        return f"{self.site_url}/_api/v2.0/drive"
+
+
+@asynccontextmanager
+async def open_sharepoint_site_session(
+    site_url: str, account: Optional[str] = None
+) -> AsyncIterator[SharePointSiteSession]:
+    """Sesión sobre un sitio SharePoint (p. ej. https://tenant.sharepoint.com/sites/X)."""
+    site_url = (site_url or "").strip().rstrip("/")
+    if not site_url.lower().startswith("https://"):
+        raise ValueError(f"URL de sitio SharePoint inválida: {site_url!r}")
+    acc = resolve_account(account)
+    async with async_playwright() as p:
+        context, should_close = await get_browser_context(p, acc)
+        page = None
+        try:
+            page = await context.new_page()
+            await page.goto(site_url, timeout=45000)
+            await page.wait_for_timeout(1500)
+            cookies = {
+                c["name"]: c["value"]
+                for c in await context.cookies()
+                if "sharepoint.com" in c.get("domain", "")
+            }
+            headers = {"Accept": "application/json", "User-Agent": UA, "Referer": page.url}
+            async with httpx.AsyncClient(
+                cookies=cookies, headers=headers, timeout=40.0, follow_redirects=True
+            ) as client:
+                r = await client.get(f"{site_url}/_api/v2.0/drive/root?$select=id")
+                if r.status_code != 200:
+                    raise RuntimeError(
+                        f"No se pudo acceder al sitio SharePoint (HTTP {r.status_code}). "
+                        "Verifica la URL o reautentica desde Configuración."
+                    )
+                yield SharePointSiteSession(client=client, site_url=site_url)
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+            if should_close:
+                await context.close()
