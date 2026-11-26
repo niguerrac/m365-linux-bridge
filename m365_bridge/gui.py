@@ -41,7 +41,11 @@ from m365_bridge.config import (
 )
 from m365_bridge import __version__
 from m365_bridge.sync import run_sync
-from m365_bridge.browser import launch_interactive_login
+from m365_bridge.browser import (
+    launch_interactive_login, is_ms_domain, cookie_key, load_cookie_store, save_cookie_store,
+    merge_cookies, sync_cookies_from_browser, qt_cookie_to_dict, dict_to_qt_cookie,
+    cookie_origin_url, _expires, is_auth_challenge,
+)
 from m365_bridge.mcp_installer import install_claude_desktop, install_antigravity, install_opencode, install_codex
 
 ICON_PATH = Path(__file__).parent.parent / "icons" / "m365.png"
@@ -457,6 +461,9 @@ class SettingsDialog(QDialog):
 
     def reauthenticate(self):
         launch_interactive_login(self.cfg.get("account_id"))
+        # Cuando el usuario termine de loguearse en Chromium, traer esa sesion a esta ventana.
+        QTimer.singleShot(45000, self.sync_session_from_browser)
+        QTimer.singleShot(120000, self.sync_session_from_browser)
         QMessageBox.information(
             self,
             "Reautenticación M365",
@@ -529,6 +536,8 @@ class SettingsDialog(QDialog):
         self.accept()
 
 class MainWindow(QMainWindow):
+    _browser_cookies_ready = pyqtSignal(int)
+
     def __init__(self):
         super().__init__()
         self.cfg = get_config()
@@ -547,6 +556,7 @@ class MainWindow(QMainWindow):
         self.web_profile.setPersistentPermissionsPolicy(QWebEngineProfile.PersistentPermissionsPolicy.StoreOnDisk)
         self.web_profile.downloadRequested.connect(self.on_download_requested)
         self._active_downloads = []
+        self._init_session_sync()
 
         # Limpiar QtWebEngine del User-Agent para que Microsoft 365, SharePoint y OneDrive
         # reconozcan el navegador como Google Chrome estándar y permitan la previsualización / edición web
@@ -867,6 +877,93 @@ class MainWindow(QMainWindow):
             )
             if reply == QMessageBox.StandardButton.Yes:
                 launch_interactive_login()
+
+    # ------------------------------------------------------------------
+    # Sesion unica: cookies MS compartidas con el perfil Chromium/Playwright (MCP, sync.py)
+    # ------------------------------------------------------------------
+    def _init_session_sync(self):
+        import threading
+        self._threading = threading
+        self._cookie_jar = {}
+        self._cookie_removed = set()
+        self._cookie_save_timer = QTimer(self)
+        self._cookie_save_timer.setSingleShot(True)
+        self._cookie_save_timer.setInterval(2000)
+        self._cookie_save_timer.timeout.connect(self._flush_cookie_jar)
+        store = self.web_profile.cookieStore()
+        store.cookieAdded.connect(self._on_cookie_added)
+        store.cookieRemoved.connect(self._on_cookie_removed)
+        self._browser_cookies_ready.connect(self._on_browser_cookies_ready)
+        store.loadAllCookies()  # emite cookieAdded por cada cookie ya guardada (migracion)
+        QTimer.singleShot(1500, self._import_store_into_qt)
+        self.sync_session_from_browser()
+
+    def _on_cookie_added(self, cookie):
+        try:
+            d = qt_cookie_to_dict(cookie)
+            if not is_ms_domain(d["domain"]):
+                return
+            k = cookie_key(d)
+            self._cookie_removed.discard(k)
+            self._cookie_jar[k] = d
+            self._cookie_save_timer.start()
+        except Exception:
+            pass
+
+    def _on_cookie_removed(self, cookie):
+        try:
+            d = qt_cookie_to_dict(cookie)
+            if not is_ms_domain(d["domain"]):
+                return
+            k = cookie_key(d)
+            self._cookie_jar.pop(k, None)
+            self._cookie_removed.add(k)
+            self._cookie_save_timer.start()
+        except Exception:
+            pass
+
+    def _flush_cookie_jar(self):
+        """Qt -> almacen comun (lo que lee Chromium/MCP)."""
+        account = self.account_id
+        stored = [c for c in load_cookie_store(account) if cookie_key(c) not in self._cookie_removed]
+        save_cookie_store(merge_cookies(stored, list(self._cookie_jar.values())), account)
+        self._cookie_removed.clear()
+
+    def _import_store_into_qt(self):
+        """Almacen comun -> Qt. Solo agrega lo que falta o vence mas tarde que lo que Qt ya tiene."""
+        store = self.web_profile.cookieStore()
+        n = 0
+        for d in load_cookie_store(self.account_id):
+            k = cookie_key(d)
+            cur = self._cookie_jar.get(k)
+            if cur is not None and _expires(cur) >= _expires(d):
+                continue
+            try:
+                store.setCookie(dict_to_qt_cookie(d), QUrl(cookie_origin_url(d)))
+                n += 1
+            except Exception:
+                pass
+        return n
+
+    def sync_session_from_browser(self):
+        """Chromium -> almacen comun -> Qt, en un hilo (Playwright es lento)."""
+        account = self.account_id
+
+        def work():
+            try:
+                total = sync_cookies_from_browser(account)
+            except Exception:
+                total = 0
+            self._browser_cookies_ready.emit(total)
+
+        self._threading.Thread(target=work, daemon=True).start()
+
+    def _on_browser_cookies_ready(self, total):
+        if total <= 0:
+            return
+        added = self._import_store_into_qt()
+        if added and hasattr(self, "webview") and is_auth_challenge(self.webview.url().toString()):
+            self.webview.reload()
 
     def on_download_requested(self, download: QWebEngineDownloadRequest):
         suggested = download.suggestedFileName() or "archivo_descargado"
