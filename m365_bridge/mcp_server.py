@@ -534,11 +534,12 @@ async def m365_sharepoint_upload(site_url: str, local_path: str, remote_path: st
         return f"Error: no existe el archivo local {local_path!r}."
     if not remote_path.strip().strip("/"):
         return "Error: remote_path vacío."
+    from urllib.parse import quote, urlparse
     from m365_bridge.cloud import open_sharepoint_site_session
     data = src.read_bytes()
     try:
         async with open_sharepoint_site_session(site_url, acc) as s:
-            headers = {"Content-Type": "application/octet-stream"}
+            digest = None
             try:
                 r_ctx = await s.client.post(
                     f"{s.site_url}/_api/contextinfo",
@@ -551,17 +552,47 @@ async def m365_sharepoint_upload(site_url: str, local_path: str, remote_path: st
                         .get("GetContextWebInformation", {})
                         .get("FormDigestValue")
                     )
-                    if digest:
-                        headers["X-RequestDigest"] = digest
             except Exception:
                 pass
-            r = await s.client.put(
-                _sp_item_url(s.drive_endpoint, remote_path, "content"),
-                content=data,
-                headers=headers,
-            )
-            if r.status_code not in (200, 201):
-                return f"Error: HTTP {r.status_code} al subir '{remote_path}'."
+            # Intentar primero vía SharePoint REST v1 (_api/web/.../Files/add), que acepta cookies + X-RequestDigest
+            # donde _api/v2.0 PUT suele devolver 401/403 en bibliotecas de sitios SharePoint.
+            uploaded = False
+            if digest:
+                try:
+                    r_root = await s.client.get(f"{s.drive_endpoint}/root?$select=webUrl")
+                    if r_root.status_code == 200 and r_root.json().get("webUrl"):
+                        root_path = urlparse(r_root.json()["webUrl"]).path.rstrip("/")
+                        clean_rel = remote_path.strip("/")
+                        parent_rel, _, fname = clean_rel.rpartition("/")
+                        folder_srv = f"{root_path}/{parent_rel}" if parent_rel else root_path
+                        v1_url = (
+                            f"{s.site_url}/_api/web/GetFolderByServerRelativeUrl("
+                            f"'{quote(folder_srv)}')/Files/add(url='{quote(fname)}',overwrite=true)"
+                        )
+                        r_v1 = await s.client.post(
+                            v1_url,
+                            content=data,
+                            headers={
+                                "Accept": "application/json;odata=verbose",
+                                "Content-Type": "application/octet-stream",
+                                "X-RequestDigest": digest,
+                            },
+                        )
+                        if r_v1.status_code in (200, 201):
+                            uploaded = True
+                except Exception:
+                    pass
+            if not uploaded:
+                headers = {"Content-Type": "application/octet-stream"}
+                if digest:
+                    headers["X-RequestDigest"] = digest
+                r = await s.client.put(
+                    _sp_item_url(s.drive_endpoint, remote_path, "content"),
+                    content=data,
+                    headers=headers,
+                )
+                if r.status_code not in (200, 201):
+                    return f"Error: HTTP {r.status_code} al subir '{remote_path}'."
     except (RuntimeError, ValueError) as e:
         return f"Error: {e}"
     return f"Subido {src} -> '{remote_path}' ({len(data)} bytes)"
