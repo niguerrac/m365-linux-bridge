@@ -538,10 +538,27 @@ async def m365_sharepoint_upload(site_url: str, local_path: str, remote_path: st
     data = src.read_bytes()
     try:
         async with open_sharepoint_site_session(site_url, acc) as s:
+            headers = {"Content-Type": "application/octet-stream"}
+            try:
+                r_ctx = await s.client.post(
+                    f"{s.base_url}/_api/contextinfo",
+                    headers={"Accept": "application/json;odata=verbose"},
+                )
+                if r_ctx.status_code == 200:
+                    digest = (
+                        r_ctx.json()
+                        .get("d", {})
+                        .get("GetContextWebInformation", {})
+                        .get("FormDigestValue")
+                    )
+                    if digest:
+                        headers["X-RequestDigest"] = digest
+            except Exception:
+                pass
             r = await s.client.put(
                 _sp_item_url(s.drive_endpoint, remote_path, "content"),
                 content=data,
-                headers={"Content-Type": "application/octet-stream"},
+                headers=headers,
             )
             if r.status_code not in (200, 201):
                 return f"Error: HTTP {r.status_code} al subir '{remote_path}'."
