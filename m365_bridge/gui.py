@@ -740,6 +740,24 @@ class MainWindow(QMainWindow):
         url = request.requestedUrl()
         if url.isValid() and url.toString() not in ("", "about:blank"):
             self.webview.setUrl(url)
+            return
+        # SharePoint / Office Online suelen hacer window.open('about:blank') + form POST o redirect JS.
+        # Si no llamamos request.openIn(temp_page), window.open() devuelve null y no pasa nada.
+        temp_page = M365WebPage(self.web_profile, self)
+        if not hasattr(self, "_pending_popups"):
+            self._pending_popups = []
+        self._pending_popups.append(temp_page)
+
+        def _on_popup_url(new_url: QUrl):
+            s = new_url.toString()
+            if new_url.isValid() and s not in ("", "about:blank"):
+                self.webview.setUrl(new_url)
+                if temp_page in self._pending_popups:
+                    self._pending_popups.remove(temp_page)
+                temp_page.deleteLater()
+
+        temp_page.urlChanged.connect(_on_popup_url)
+        request.openIn(temp_page)
 
     def on_url_changed(self, url: QUrl):
         u = url.toString()
