@@ -541,7 +541,7 @@ async def m365_sharepoint_upload(site_url: str, local_path: str, remote_path: st
             headers = {"Content-Type": "application/octet-stream"}
             try:
                 r_ctx = await s.client.post(
-                    f"{s.base_url}/_api/contextinfo",
+                    f"{s.site_url}/_api/contextinfo",
                     headers={"Accept": "application/json;odata=verbose"},
                 )
                 if r_ctx.status_code == 200:
